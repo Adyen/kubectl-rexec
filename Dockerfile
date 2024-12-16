@@ -1,5 +1,9 @@
 FROM golang:1.23-bookworm AS builder
 
+LABEL org.opencontainers.image.source=https://github.com/adyen/kubectl-rexec
+LABEL org.opencontainers.image.description="Rexec proxy"
+LABEL org.opencontainers.image.licenses=MIT
+
 WORKDIR /workspace
 COPY go.mod go.mod
 COPY go.sum go.sum
