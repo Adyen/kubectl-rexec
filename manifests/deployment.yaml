@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: rexec
+  name: rexec
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rexec
+  strategy: {}
+  template:
+    metadata:
+      labels:
+        app: rexec
+    spec:
+      serviceAccountName: rexec-impersonator
+      automountServiceAccountToken: true
+      containers:
+      - image: ghcr.io/adyen/kubectl-rexec:latest
+        imagePullPolicy: Always
+        name: rexec
+        ports:
+        - containerPort: 8443
+        args:
+        - --audit-trace
+        - --by-pass-user=system:admin
+        resources:
+          requests:
+            ephemeral-storage: "1Gi"
+            cpu: 150m
+            memory: "128Mi"
+          limits:
+            ephemeral-storage: "1Gi"
+            cpu: 300m
+            memory: "256Mi"
+        volumeMounts:
+        - mountPath: /etc/pki/rexec
+          name: rexec-tls
+          readOnly: true
+      volumes:
+      - name: rexec-tls
+        secret:
+          secretName: rexec-tls

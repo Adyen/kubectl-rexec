@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rexec
+  namespace: kube-system
+spec:
+  sessionAffinity: ClientIP
+  ports:
+  - name: rexec
+    port: 8443
+    protocol: TCP
+    targetPort: 8443
+  selector:
+    app: rexec
+  type: ClusterIP
