@@ -9,10 +9,10 @@ require (
 	github.com/spf13/cobra v1.8.1
 	k8s.io/api v0.32.0
 	k8s.io/apimachinery v0.32.0
-	k8s.io/cli-runtime v0.31.4
+	k8s.io/cli-runtime v0.32.0
 	k8s.io/client-go v0.32.0
-	k8s.io/component-base v0.31.4
-	k8s.io/kubectl v0.31.4
+	k8s.io/component-base v0.32.0
+	k8s.io/kubectl v0.32.0
 )
 
 require (
