@@ -7,12 +7,12 @@ require (
 	github.com/gorilla/mux v1.8.1
 	github.com/rs/zerolog v1.34.0
 	github.com/spf13/cobra v1.9.1
-	k8s.io/api v0.32.1
-	k8s.io/apimachinery v0.32.2
-	k8s.io/cli-runtime v0.32.1
-	k8s.io/client-go v0.32.1
-	k8s.io/component-base v0.32.1
-	k8s.io/kubectl v0.32.1
+	k8s.io/api v0.33.0
+	k8s.io/apimachinery v0.33.0
+	k8s.io/cli-runtime v0.33.0
+	k8s.io/client-go v0.33.0
+	k8s.io/component-base v0.33.0
+	k8s.io/kubectl v0.33.0
 )
 
 require (
