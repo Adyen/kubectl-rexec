@@ -18,7 +18,7 @@ jobs:
 
       - name: TruffleHog OSS
         id: trufflehog
-        uses: trufflesecurity/trufflehog@v3.88.34
+        uses: trufflesecurity/trufflehog@v3.88.35
         continue-on-error: true
         with:
           path: ./
