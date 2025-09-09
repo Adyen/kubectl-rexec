@@ -25,6 +25,7 @@ jobs:
           base: "${{ github.event.repository.default_branch }}"
           head: HEAD
           extra_args: >-
+              --debug
               --log-level=5
               --exclude-paths manifests/secrets.yaml
 
