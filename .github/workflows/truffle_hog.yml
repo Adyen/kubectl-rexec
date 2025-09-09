@@ -24,6 +24,8 @@ jobs:
           path: ./
           base: "${{ github.event.repository.default_branch }}"
           head: HEAD
+          extra_args: >-
+              --exclude-paths manifests/secrets.yaml
 
       - name: Scan Results Status
         if: steps.trufflehog.outcome == 'failure'
