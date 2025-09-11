@@ -25,6 +25,7 @@ jobs:
           base: "${{ github.event.repository.default_branch }}"
           head: HEAD
           extra_args: >-
+            --json
             --exclude-paths .trufflehogexclude
 
       - name: Scan Results Status
