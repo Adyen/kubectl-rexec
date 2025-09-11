@@ -24,6 +24,10 @@ jobs:
           path: ./
           base: "${{ github.event.repository.default_branch }}"
           head: HEAD
+          scan: filesystem
+          extra_args: >-
+            --directory .
+            --exclude-paths .trufflehogexclude
 
       - name: Scan Results Status
         if: steps.trufflehog.outcome == 'failure'
