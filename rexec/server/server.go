@@ -19,6 +19,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+type protocolType string
+
+const (
+	protocolWebSocket protocolType = "websocket"
+	protocolSPDY      protocolType = "spdy"
+)
+
+const (
+	ctxSessionIDKey = "sessionID"
+	ctxProtocolKey  = "protocol"
+)
+
 func Server() {
 	// creating a mux router
 	r := mux.NewRouter()
@@ -128,7 +140,8 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 		// we begin to generate a uuid for the session and we set it as the id of a context
 		// we will use this id to keep track what use the session belongs to
 		ctxid := uuid.New().String()
-		ctx := context.WithValue(r.Context(), "sessionID", ctxid)
+		ctx := context.WithValue(r.Context(), ctxSessionIDKey, ctxid)
+		ctx = context.WithValue(ctx, ctxProtocolKey, detectProtocol(r))
 
 		// we save the session id into a map with the user's identity
 		mapSync.Lock()
@@ -255,4 +268,12 @@ func canPass(rv admissionv1.AdmissionReview) bool {
 		}
 	}
 	return false
+}
+
+func detectProtocol(r *http.Request) protocolType {
+	upgrade := strings.ToLower(r.Header.Get("Upgrade"))
+	if strings.Contains(upgrade, "spdy") {
+		return protocolSPDY
+	}
+	return protocolWebSocket
 }

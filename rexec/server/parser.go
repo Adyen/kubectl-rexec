@@ -12,10 +12,12 @@ type webSocketFrame struct {
 	Payload []byte
 }
 
+var errIncompleteFrame = errors.New("incomplete websocket frame")
+
 // parseWebSocketFrame is for parsing websocket traffic
-func parseWebSocketFrame(data []byte) (*webSocketFrame, error) {
+func parseWebSocketFrame(data []byte) (*webSocketFrame, int, error) {
 	if len(data) < 2 {
-		return nil, errors.New("data too short to be a WebSocket frame")
+		return nil, 0, errIncompleteFrame
 	}
 
 	fin := data[0]&0x80 != 0
@@ -28,13 +30,13 @@ func parseWebSocketFrame(data []byte) (*webSocketFrame, error) {
 	switch payloadLen {
 	case 126:
 		if len(data) < 4 {
-			return nil, errors.New("data too short for extended payload length")
+			return nil, 0, errors.New("data too short for extended payload length")
 		}
 		payloadLen = int(binary.BigEndian.Uint16(data[2:4]))
 		offset = 4
 	case 127:
 		if len(data) < 10 {
-			return nil, errors.New("data too short for extended payload length")
+			return nil, 0, errIncompleteFrame
 		}
 		payloadLen = int(binary.BigEndian.Uint64(data[2:10]))
 		offset = 10
@@ -51,7 +53,12 @@ func parseWebSocketFrame(data []byte) (*webSocketFrame, error) {
 		maskingKey = data[offset-4 : offset]
 	}
 
-	payload := data[offset:]
+	totalLength := offset + payloadLen
+	if len(data) < totalLength {
+		return nil, 0, errIncompleteFrame
+	}
+
+	payload := data[offset:totalLength]
 
 	if mask {
 		for i := 0; i < len(payload); i++ {
@@ -64,5 +71,5 @@ func parseWebSocketFrame(data []byte) (*webSocketFrame, error) {
 		Opcode:  opcode,
 		Mask:    mask,
 		Payload: payload,
-	}, nil
+	}, totalLength, nil
 }

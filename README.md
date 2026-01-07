@@ -7,7 +7,7 @@ Kubectl exec does not provide any kind of audit what is actually done inside the
 We strongly encourage you to contribute to our repository. Find out more in our [contribution guidelines](https://github.com/Adyen/.github/blob/master/CONTRIBUTING.md)
 
 ## Requirements
-In kubernetes 1.30 `TranslateStreamCloseWebsocketRequests` featuregate is true by the default making protocol between kubectl and kube-apiserver is websocket while prior is SPDY, this solution handles only websockets so the k8s cluster either has to be 1.30 or 1.29 with `TranslateStreamCloseWebsocketRequests=true` feature flag. Version below 1.29 are not supported.
+The proxy now supports both websocket and SPDY exec streams. It works on clusters using the `TranslateStreamCloseWebsocketRequests` feature gate (websocket path) as well as older SPDY-based exec flows (e.g. EKS clusters without the websocket upgrade). Kubernetes versions below 1.29 remain unsupported.
 
 ## Installation
 See the [Getting started](https://github.com/Adyen/kubectl-rexec/blob/master/STARTED.md) guide.
