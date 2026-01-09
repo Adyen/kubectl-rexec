@@ -25,6 +25,7 @@ import (
 	"k8s.io/kubectl/pkg/util/completion"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
+	"k8s.io/kubectl/pkg/util/term"
 )
 
 // We dont do much here, mostly implementing the same exec command
@@ -116,6 +117,23 @@ type RexecOptoins struct {
 	*cmdexec.ExecOptions
 }
 
+// terminalSizeQueueAdapter is an adapter for the terminal size queue to the remotecommand.TerminalSizeQueue interface
+type terminalSizeQueueAdapter struct {
+	delegate term.TerminalSizeQueue
+}
+
+// Next returns the next terminal size
+func (a *terminalSizeQueueAdapter) Next() *remotecommand.TerminalSize {
+	next := a.delegate.Next()
+	if next == nil {
+		return nil
+	}
+	return &remotecommand.TerminalSize{
+		Width:  next.Width,
+		Height: next.Height,
+	}
+}
+
 func NewRexecOptions(e *cmdexec.ExecOptions) *RexecOptoins {
 	r := RexecOptoins{e}
 	return &r
@@ -174,7 +192,7 @@ func (r *RexecOptoins) rexecRun() error {
 
 	var sizeQueue remotecommand.TerminalSizeQueue
 	if t.Raw {
-		sizeQueue = t.MonitorSize(t.GetSize())
+		sizeQueue = &terminalSizeQueueAdapter{delegate: t.MonitorSize(t.GetSize())}
 
 		r.ExecOptions.ErrOut = nil
 	}
