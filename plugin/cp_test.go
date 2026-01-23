@@ -19,6 +19,7 @@ const (
 	testTmpFile       = "/tmp/file"
 	testTmpDest       = "/tmp/dest"
 	testTmpSrc        = "/tmp/src"
+	testLocalPath     = "/local/path"
 	testDefaultNS     = "default"
 	testContent1      = "content1\n"
 	testContent2      = "content2\n"
@@ -28,6 +29,22 @@ const (
 	testFileDoubleDot = "file..txt"
 	extractTarErrMsg  = "extractTar() error = %v"
 )
+
+// checkTestError is a helper to verify error conditions in tests
+func checkTestError(t *testing.T, err error, wantErr, funcName string) {
+	t.Helper()
+	if wantErr == "" {
+		if err != nil {
+			t.Errorf("%s unexpected error = %v", funcName, err)
+		}
+		return
+	}
+	if err == nil {
+		t.Errorf("%s expected error containing %q, got nil", funcName, wantErr)
+	} else if !strings.Contains(err.Error(), wantErr) {
+		t.Errorf("%s error = %v, want containing %q", funcName, err, wantErr)
+	}
+}
 
 // testHelper provides common test setup utilities
 type testHelper struct {
@@ -162,14 +179,12 @@ func TestParseFileSpec(t *testing.T) {
 
 // TestValidateLocalDestination tests local destination validation
 func TestValidateLocalDestination(t *testing.T) {
-	// Create a temp directory for testing
 	tmpDir, err := os.MkdirTemp("", "validate-dest-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Create a test file
 	testFile := filepath.Join(tmpDir, "existing-file.txt")
 	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
@@ -189,17 +204,7 @@ func TestValidateLocalDestination(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validateLocalDestination(tt.dest)
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Errorf("validateLocalDestination() unexpected error = %v", err)
-				}
-			} else {
-				if err == nil {
-					t.Error("validateLocalDestination() expected error, got nil")
-				} else if !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("validateLocalDestination() error = %v, want containing %q", err, tt.wantErr)
-				}
-			}
+			checkTestError(t, err, tt.wantErr, "validateLocalDestination()")
 		})
 	}
 }
@@ -343,26 +348,26 @@ func TestValidateCopySpecs(t *testing.T) {
 	}{
 		{
 			name:    "valid pod to local",
-			src:     &fileSpec{PodName: "pod", PodNamespace: "ns", File: "/tmp/file"},
-			dest:    &fileSpec{File: "/local/path"},
+			src:     &fileSpec{PodName: "pod", PodNamespace: "ns", File: testTmpFile},
+			dest:    &fileSpec{File: testLocalPath},
 			wantErr: "",
 		},
 		{
 			name:    "local to pod blocked",
-			src:     &fileSpec{File: "/local/path"},
-			dest:    &fileSpec{PodName: "pod", PodNamespace: "ns", File: "/tmp/file"},
+			src:     &fileSpec{File: testLocalPath},
+			dest:    &fileSpec{PodName: "pod", PodNamespace: "ns", File: testTmpFile},
 			wantErr: "copying to pods is not supported",
 		},
 		{
 			name:    "pod to pod blocked",
-			src:     &fileSpec{PodName: "pod1", PodNamespace: "ns", File: "/tmp/file"},
-			dest:    &fileSpec{PodName: "pod2", PodNamespace: "ns", File: "/tmp/file"},
+			src:     &fileSpec{PodName: "pod1", PodNamespace: "ns", File: testTmpFile},
+			dest:    &fileSpec{PodName: "pod2", PodNamespace: "ns", File: testTmpFile},
 			wantErr: "destination must be a local path",
 		},
 		{
 			name:    "empty remote path",
 			src:     &fileSpec{PodName: "pod", PodNamespace: "ns", File: ""},
-			dest:    &fileSpec{File: "/local/path"},
+			dest:    &fileSpec{File: testLocalPath},
 			wantErr: "remote path cannot be empty",
 		},
 	}
@@ -370,17 +375,7 @@ func TestValidateCopySpecs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validateCopySpecs(tt.src, tt.dest)
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Errorf("validateCopySpecs() unexpected error = %v", err)
-				}
-			} else {
-				if err == nil {
-					t.Error("validateCopySpecs() expected error, got nil")
-				} else if !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("validateCopySpecs() error = %v, want containing %q", err, tt.wantErr)
-				}
-			}
+			checkTestError(t, err, tt.wantErr, "validateCopySpecs()")
 		})
 	}
 }

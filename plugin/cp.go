@@ -50,6 +50,9 @@ type execStreams struct {
 	stderr io.Writer
 }
 
+// Error message format for path traversal attempts
+const errPathTraversal = "illegal file path in tar: %s (path traversal attempt)"
+
 // NewCmdCp creates the rexec cp command
 func NewCmdCp(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := &CopyOptions{
@@ -421,65 +424,100 @@ func (o *CopyOptions) extractTar(reader io.Reader, destPath string, srcBase stri
 			return err
 		}
 
-		// Sanitize the header name to prevent path traversal
-		sanitizedName := path.Clean(header.Name)
-		if sanitizedName == ".." || strings.HasPrefix(sanitizedName, "../") || strings.Contains(sanitizedName, "/../") || path.IsAbs(sanitizedName) {
-			return fmt.Errorf("illegal file path in tar: %s (path traversal attempt)", header.Name)
-		}
-
-		// Calculate target path
-		var target string
-		if destIsDir {
-			target = filepath.Join(destPath, sanitizedName)
-		} else if sanitizedName == srcBase {
-			target = destPath
-		} else {
-			relPath := strings.TrimPrefix(sanitizedName, srcBase+"/")
-			if relPath == sanitizedName {
-				target = filepath.Join(filepath.Dir(destPath), sanitizedName)
-			} else {
-				target = filepath.Join(destPath, relPath)
-			}
-		}
-
-		target = filepath.Clean(target)
-		targetAbs, err := filepath.Abs(target)
+		// Security: Validate and compute safe target path
+		targetAbs, err := o.computeSafeTarget(header.Name, destPath, destPathAbs, baseAbs, srcBase, destIsDir)
 		if err != nil {
-			return fmt.Errorf("invalid target path: %v", err)
+			return err
 		}
 
-		// Ensure the target path is contained within the base directory
-		if targetAbs != baseAbs && targetAbs != destPathAbs && !strings.HasPrefix(targetAbs, baseAbs+string(os.PathSeparator)) {
-			return fmt.Errorf("illegal file path in tar: %s (path traversal attempt)", header.Name)
-		}
-
-		// Write the file or create the directory
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(targetAbs, os.FileMode(header.Mode)); err != nil {
-				return fmt.Errorf("failed to create directory: %v", err)
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(targetAbs), 0755); err != nil {
-				return fmt.Errorf("failed to create parent directory: %v", err)
-			}
-			f, err := os.OpenFile(targetAbs, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
-			if err != nil {
-				return fmt.Errorf("failed to create file: %v", err)
-			}
-			_, copyErr := io.Copy(f, tarReader)
-			f.Close()
-			if copyErr != nil {
-				return fmt.Errorf("failed to write file: %v", copyErr)
-			}
-		case tar.TypeSymlink:
-			fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping symlink %s -> %s (symlinks not supported for security)\n", header.Name, header.Linkname)
-		default:
-			fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping unsupported file type %c for %s\n", header.Typeflag, header.Name)
+		if err := o.extractEntry(tarReader, header, targetAbs); err != nil {
+			return err
 		}
 	}
 
 	return nil
+}
+
+// extractEntry writes a single tar entry to the filesystem
+func (o *CopyOptions) extractEntry(tarReader *tar.Reader, header *tar.Header, targetAbs string) error {
+	switch header.Typeflag {
+	case tar.TypeDir:
+		if err := os.MkdirAll(targetAbs, os.FileMode(header.Mode)); err != nil {
+			return fmt.Errorf("failed to create directory: %v", err)
+		}
+	case tar.TypeReg:
+		if err := writeFile(tarReader, header, targetAbs); err != nil {
+			return err
+		}
+	case tar.TypeSymlink:
+		fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping symlink %s -> %s (symlinks not supported for security)\n", header.Name, header.Linkname)
+	default:
+		fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping unsupported file type %c for %s\n", header.Typeflag, header.Name)
+	}
+	return nil
+}
+
+// writeFile writes a regular file from the tar archive
+func writeFile(tarReader *tar.Reader, header *tar.Header, targetAbs string) error {
+	if err := os.MkdirAll(filepath.Dir(targetAbs), 0755); err != nil {
+		return fmt.Errorf("failed to create parent directory: %v", err)
+	}
+	f, err := os.OpenFile(targetAbs, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+	if err != nil {
+		return fmt.Errorf("failed to create file: %v", err)
+	}
+	_, copyErr := io.Copy(f, tarReader)
+	f.Close()
+	if copyErr != nil {
+		return fmt.Errorf("failed to write file: %v", copyErr)
+	}
+	return nil
+}
+
+// computeSafeTarget validates the tar entry name and computes a safe absolute target path.
+// Returns an error if the path would escape the destination directory (path traversal).
+func (o *CopyOptions) computeSafeTarget(name, destPath, destPathAbs, baseAbs, srcBase string, destIsDir bool) (string, error) {
+	// Sanitize: Use path.Clean (not filepath) to normalize the tar entry name
+	cleanName := path.Clean(name)
+
+	// Reject obviously malicious paths
+	if cleanName == ".." || strings.HasPrefix(cleanName, "../") || path.IsAbs(cleanName) {
+		return "", fmt.Errorf(errPathTraversal, name)
+	}
+
+	// Calculate target path based on destination type
+	var target string
+	if destIsDir {
+		target = filepath.Join(destPath, cleanName)
+	} else if cleanName == srcBase {
+		target = destPath
+	} else {
+		relPath := strings.TrimPrefix(cleanName, srcBase+"/")
+		if relPath == cleanName {
+			target = filepath.Join(filepath.Dir(destPath), cleanName)
+		} else {
+			target = filepath.Join(destPath, relPath)
+		}
+	}
+
+	// Get absolute path of target
+	targetAbs, err := filepath.Abs(filepath.Clean(target))
+	if err != nil {
+		return "", fmt.Errorf("invalid target path: %v", err)
+	}
+
+	// Security: Use filepath.Rel to verify containment (CodeQL-recognized pattern)
+	rel, err := filepath.Rel(baseAbs, targetAbs)
+	if err != nil {
+		return "", fmt.Errorf(errPathTraversal, name)
+	}
+
+	// If the relative path starts with "..", it escapes the base directory
+	if strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf(errPathTraversal, name)
+	}
+
+	return targetAbs, nil
 }
 
 // parseFileSpec parses a file spec string into a fileSpec struct
