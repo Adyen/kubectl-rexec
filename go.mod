@@ -2,7 +2,7 @@ module github.com/adyen/kubectl-rexec
 
 go 1.25.0
 
-toolchain go1.25.5
+toolchain go1.25.6
 
 require (
 	github.com/google/uuid v1.6.0
