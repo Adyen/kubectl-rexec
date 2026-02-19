@@ -20,6 +20,7 @@ Tests are currently implemented for the rexec/server
 
 Run the tests like:
 `go test ./rexec/server`
+`go test ./plugin`
 
 ## Documentation
 See the [Design](https://github.com/Adyen/kubectl-rexec/blob/master/DESIGN.md).

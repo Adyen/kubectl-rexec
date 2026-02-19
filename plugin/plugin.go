@@ -53,7 +53,7 @@ func Rexec() {
 		Use:   "rexec",
 		Short: i18n.T("rexec plugin for kubectl exec"),
 		Long: templates.LongDesc(`
-      provides audited way to perform kubectl exec.`),
+      provides audited way to perform kubectl exec and cp.`),
 	}
 
 	cmds.SetGlobalNormalizationFunc(cliflag.WarnWordSepNormalizeFunc)
@@ -69,6 +69,7 @@ func Rexec() {
 
 	f := cmdutil.NewFactory(MatchVersionKubeConfigFlags)
 
+	// Create exec command
 	originalExec := cmdexec.NewCmdExec(f, kubectlOptions.IOStreams)
 
 	options := &cmdexec.ExecOptions{
@@ -108,7 +109,9 @@ func Rexec() {
 	newExec.Flags().BoolVarP(&roptions.ExecOptions.TTY, "tty", "t", roptions.ExecOptions.TTY, "Stdin is a TTY")
 	newExec.Flags().BoolVarP(&roptions.ExecOptions.Quiet, "quiet", "q", roptions.ExecOptions.Quiet, "Only print output from the remote session")
 
+	// Add both commands
 	cmds.AddCommand(newExec)
+	cmds.AddCommand(NewCmdCp(f, kubectlOptions.IOStreams))
 
 	cmds.Execute()
 }
