@@ -71,6 +71,6 @@ kubectl -n kube-system logs -l app=rexec -f
 Example audit entries:
 
 ```
-{"level":"info","facility":"audit","user":"alice","session":"f1e2d3c4-b5a6-7f8e-9d0c-1a2b3c4d5e6f","command":"tar cf - -C /var/log -- app.log","time":"2024-12-16T10:30:01Z"}
-{"level":"info","facility":"audit","user":"bob","session":"94f1add8-7f29-4b18-b259-99f68605149e","command":"ls -la","time":"2024-12-16T10:31:15Z"}
+{"level":"info","facility":"audit","user":"alice","session":"oneoff","command":"tar cf - -C /var/log -- app.log","time":"2024-12-16T10:30:01Z"}
+{"level":"info","facility":"audit","user":"bob","session":"a1b2c3d4","command":"ls -la","time":"2024-12-16T10:31:15Z"}
 ```

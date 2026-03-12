@@ -326,31 +326,39 @@ func (o *CopyOptions) extractTar(reader io.Reader, destPath, srcBase string) err
 			return err
 		}
 
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(targetAbs, os.FileMode(header.Mode)); err != nil {
-				return fmt.Errorf("mkdir failed: %v", err)
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(targetAbs), 0755); err != nil {
-				return fmt.Errorf("mkdir failed: %v", err)
-			}
-			f, err := os.OpenFile(targetAbs, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
-			if err != nil {
-				return fmt.Errorf("create file failed: %v", err)
-			}
-			_, copyErr := io.Copy(f, tarReader)
-			if closeErr := f.Close(); closeErr != nil && copyErr == nil {
-				return fmt.Errorf("close file failed: %v", closeErr)
-			}
-			if copyErr != nil {
-				return fmt.Errorf("write failed: %v", copyErr)
-			}
-		case tar.TypeSymlink:
-
-		//nolint:errcheck
-			_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping symlink %s -> %s (symlinks not supported for security)\n", header.Name, header.Linkname)
+		// Delegated the actual file creation to reduce cognitive complexity
+		if err := o.processTarEntry(header, tarReader, targetAbs); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// processTarEntry handles the creation of directories, files, or skipping symlinks based on the tar header type.
+func (o *CopyOptions) processTarEntry(header *tar.Header, tarReader *tar.Reader, targetAbs string) error {
+	switch header.Typeflag {
+	case tar.TypeDir:
+		if err := os.MkdirAll(targetAbs, os.FileMode(header.Mode)); err != nil {
+			return fmt.Errorf("mkdir failed: %v", err)
+		}
+	case tar.TypeReg:
+		if err := os.MkdirAll(filepath.Dir(targetAbs), 0755); err != nil {
+			return fmt.Errorf("mkdir failed: %v", err)
+		}
+		f, err := os.OpenFile(targetAbs, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+		if err != nil {
+			return fmt.Errorf("create file failed: %v", err)
+		}
+		_, copyErr := io.Copy(f, tarReader)
+		if closeErr := f.Close(); closeErr != nil && copyErr == nil {
+			return fmt.Errorf("close file failed: %v", closeErr)
+		}
+		if copyErr != nil {
+			return fmt.Errorf("write failed: %v", copyErr)
+		}
+	case tar.TypeSymlink:
+		//nolint:errcheck
+		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping symlink %s -> %s (symlinks not supported for security)\n", header.Name, header.Linkname)
 	}
 	return nil
 }
