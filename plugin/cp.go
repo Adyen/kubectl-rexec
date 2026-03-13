@@ -154,12 +154,9 @@ func validateCopySpecs(src, dest *fileSpec) error {
 func validateLocalDestination(destPath string) error {
 	destPath = filepath.Clean(destPath)
 
-	info, err := os.Stat(destPath)
+	_, err := os.Stat(destPath)
 	if err == nil {
-		if info.IsDir() {
-			return nil
-		}
-		return nil // existing file, will overwrite
+		return nil // existing file or directory
 	}
 
 	parentDir := filepath.Dir(destPath)
@@ -293,12 +290,6 @@ func (o *CopyOptions) extractTar(reader io.Reader, destPath, srcBase string) err
 	destInfo, statErr := os.Stat(destPath)
 	destIsDir := statErr == nil && destInfo.IsDir()
 
-	// Compute absolute paths for security validation
-	destPathAbs, err := filepath.Abs(destPath)
-	if err != nil {
-		return fmt.Errorf("invalid destination path: %v", err)
-	}
-
 	var baseDir string
 	if destIsDir {
 		baseDir = destPath
@@ -321,7 +312,7 @@ func (o *CopyOptions) extractTar(reader io.Reader, destPath, srcBase string) err
 		}
 
 		// Security: validate and compute safe target path
-		targetAbs, err := computeSafeTarget(header.Name, destPath, destPathAbs, baseAbs, srcBase, destIsDir)
+		targetAbs, err := computeSafeTarget(header.Name, destPath, baseAbs, srcBase, destIsDir)
 		if err != nil {
 			return err
 		}
@@ -359,13 +350,18 @@ func (o *CopyOptions) processTarEntry(header *tar.Header, tarReader *tar.Reader,
 	case tar.TypeSymlink:
 		//nolint:errcheck
 		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping symlink %s -> %s (symlinks not supported for security)\n", header.Name, header.Linkname)
+	case tar.TypeLink:
+		//nolint:errcheck
+		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping hard link %s -> %s (hard links not supported for security)\n", header.Name, header.Linkname)
+	default:
+		//nolint:errcheck
+		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping unsupported tar entry %s (type %d)\n", header.Name, header.Typeflag)
 	}
 	return nil
 }
 
 // computeSafeTarget validates the tar entry name and computes a safe absolute target path.
-func computeSafeTarget(name, destPath, destPathAbs, baseAbs, srcBase string, destIsDir bool) (string, error) {
-
+func computeSafeTarget(name, destPath, baseAbs, srcBase string, destIsDir bool) (string, error) {
 	cleanName := path.Clean(name)
 
 	if cleanName == ".." || strings.HasPrefix(cleanName, "../") || path.IsAbs(cleanName) {
@@ -393,7 +389,7 @@ func computeSafeTarget(name, destPath, destPathAbs, baseAbs, srcBase string, des
 		return "", fmt.Errorf(errPathTraversal, name)
 	}
 
-	if strings.HasPrefix(rel, "..") {
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf(errPathTraversal, name)
 	}
 

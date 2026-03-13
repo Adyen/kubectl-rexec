@@ -7,16 +7,13 @@ Complete testing for `kubectl-rexec`.
 ### Running Tests
 
 ```bash
-cd plugin
-go test -v
-
-cd rexec/server
-go test -v
+go test ./rexec/server
+go test ./plugin
 
 go test -v -run TestParseFileSpec
 ```
 
-#### Plugin Tests (`plugin/`)
+## Plugin Tests (`plugin/`)
 
 | Test | Description |
 |------|-------------|
@@ -24,10 +21,16 @@ go test -v -run TestParseFileSpec
 | `TestValidateLocalDestination` | Validates local path exists |
 | `TestExtractTarSingleFile` | Extracts single file from tar |
 | `TestExtractTarDirectory` | Extracts directory from tar |
-| `TestExtractTarSymlinkSkipped` | Security: symlinks are skipped with warning |
-| `TestExtractTarValidDoubleDotFilename` | Valid filenames like `file..txt` are allowed |
+| `TestExtractTarRenameDirectory` | Extracts directory with different name |
+| `TestExtractTarLinkTypesSkipped` | Security: symlinks and hard links are skipped with warning |
+| `TestExtractTarPathTraversal` | Security: path traversal attempts are blocked |
+| `TestExtractTarValidDoubleDotFileName` | Valid filenames like `file..txt` are allowed |
+| `TestExtractTarValidDoubleDotDirectoryName` | Valid directory names with `..` are allowed |
 | `TestRunWithArgsValidation` | Rejects upload, pod-to-pod |
 | `TestValidateCopySpecs` | Validates copy specs |
+| `TestComputeSafeTarget` | Security: validates tar entry paths and targets |
+| `TestProcessTarEntry` | Tests individual tar entry processing |
+| `TestProcessTarEntryUnsupportedTypes` | Security: unsupported tar types are skipped with warning |
 
 #### Server Tests (`rexec/server/`)
 
