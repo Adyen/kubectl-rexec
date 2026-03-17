@@ -222,7 +222,11 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 func waitForListener(listener string) error {
 	// again, super lazy but it is fine for now
 	for i := 0; i < 5; i++ {
-		if proxyMap[listener] {
+		isSocketReady := false
+		mapSync.Lock()
+		isSocketReady = proxyMap[listener]
+		mapSync.Unlock()
+		if isSocketReady {
 			SysLogger.Debug().Msgf("socket became ready on try %d", i)
 			return nil
 		}
