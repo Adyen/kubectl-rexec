@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -230,6 +231,99 @@ func TestWaitForListenerReady(t *testing.T) {
 	}
 	if time.Since(start) > time.Second {
 		t.Fatalf("waitForListener returned too slowly")
+	}
+}
+
+// initCleanup saves all package-level state that Init modifies and restores it after the test.
+func initCleanup(t *testing.T) {
+	t.Helper()
+	oldCAPath, oldTokenPath := caPath, tokenPath
+	oldSauce := SecretSauce
+	oldExitFn := exitFn
+	t.Cleanup(func() {
+		caPath, tokenPath = oldCAPath, oldTokenPath
+		SecretSauce = oldSauce
+		exitFn = oldExitFn
+	})
+}
+
+func TestInitMissingCA(t *testing.T) {
+	initCleanup(t)
+
+	dir := t.TempDir()
+	tf, err := os.CreateTemp(dir, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tf.WriteString("token-123")
+	tf.Close()
+
+	caPath = "/invalid/ca.crt"
+	tokenPath = tf.Name()
+	SecretSauce = ""
+
+	exited := false
+	exitFn = func(int) { exited = true }
+
+	Init()
+
+	if !exited {
+		t.Fatal("expected fatal exit on missing CA cert, got none")
+	}
+}
+
+func TestInitMissingToken(t *testing.T) {
+	initCleanup(t)
+
+	dir := t.TempDir()
+	cf, err := os.CreateTemp(dir, "ca.crt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf.Close()
+
+	caPath = cf.Name()
+	tokenPath = "/invalid/token-123"
+	SecretSauce = ""
+
+	exited := false
+	exitFn = func(int) { exited = true }
+
+	Init()
+
+	if !exited {
+		t.Fatal("expected fatal exit on missing token, got none")
+	}
+}
+
+func TestInitInvalidSecretSauce(t *testing.T) {
+	initCleanup(t)
+
+	dir := t.TempDir()
+	cf, err := os.CreateTemp(dir, "ca.crt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf.Close()
+
+	tf, err := os.CreateTemp(dir, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tf.WriteString("token-123")
+	tf.Close()
+
+	caPath = cf.Name()
+	tokenPath = tf.Name()
+	SecretSauce = "not-an-uuid"
+
+	exited := false
+	exitFn = func(int) { exited = true }
+
+	Init()
+
+	if !exited {
+		t.Fatal("expected fatal exit on invalid SecretSauce, got none")
 	}
 }
 

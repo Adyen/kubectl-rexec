@@ -136,7 +136,7 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 		mapSync.Unlock()
 
 		// we set the previously generated context to the request
-		r.WithContext(ctx)
+		r = r.WithContext(ctx)
 
 		// Log initial command as an audit event
 		// with session id
