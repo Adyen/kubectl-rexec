@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -55,7 +56,16 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	r.Header.Add("Kubectl-Command", "kubectl exec")
 
 	// adding the service account token we are using for impersonating
-	r.Header.Add("Authorization", fmt.Sprintf("Bearer %s", token))
+	// Re-read token from disk on every request so we pick up kubelet's
+	// projected token rotation instead of using a stale in-memory copy.
+	rawToken, err := os.ReadFile(tokenPath)
+	if err != nil {
+		SysLogger.Error().Err(err).Msg("failed to re-read service account token")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(httpInternalError))
+		return
+	}
+	r.Header.Add("Authorization", fmt.Sprintf("Bearer %s", string(rawToken)))
 
 	// add user to impersonation header
 	r.Header.Add("Impersonate-User", user)
