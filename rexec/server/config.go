@@ -82,7 +82,9 @@ func Init() {
 }
 
 func parseToken() (jwt.MapClaims, error) {
-	token, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{}) // nosonar 
+	// we do not need to do any actual validation on this jwt, as it will be validated by k8s api server
+	// anyway, so we just parse it and return the claims, so we can check the expiration time
+	token, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{}) // nosonar
 	if err != nil {
 		return nil, err
 	}

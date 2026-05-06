@@ -54,50 +54,13 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Header.Add("Kubectl-Command", "kubectl exec")
 
-	SysLogger.Debug().Msg("checking service account token")
-	claims, err := parseToken()
+	// we check if the initially loaded jwt is still valid, if not we refresh it
+	err := checkToken()
 	if err != nil {
 		SysLogger.Error().Err(err).Msg("failed to check the service account token")
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(httpForbidden))
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(httpInternalError))
 		return
-	}
-	expirationTime, err := claims.GetExpirationTime()
-	if err != nil {
-		SysLogger.Error().Err(err).Msg("failed to get expiration time from service account token")
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(httpForbidden))
-		return
-	}
-	if expirationTime.Before(time.Now()) {
-		SysLogger.Debug().Msg("service account token is expired, getting a new one")
-		err = loadToken()
-		if err != nil {
-			SysLogger.Error().Err(err).Msg("failed to load service account token")
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(httpForbidden))
-			return
-		}
-		claims, err = parseToken()
-		if err != nil {
-			SysLogger.Error().Err(err).Msg("failed to parse the new service account token")
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(httpForbidden))
-			return
-		}
-		expirationTime, err = claims.GetExpirationTime()
-		if err != nil {
-			SysLogger.Error().Err(err).Msg("failed to get expiration time from the new service account token")
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(httpForbidden))
-			return
-		}
-		if expirationTime.Before(time.Now()) {
-			SysLogger.Error().Msg("new service account token is also expired")
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(httpForbidden))
-			return
-		}
 	}
 	// adding the service account token we are using for impersonating
 	r.Header.Add("Authorization", fmt.Sprintf("Bearer %s", token))
@@ -218,6 +181,43 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 
 		proxy.ServeHTTP(w, r)
 	}
+}
+
+func checkToken() error {
+	SysLogger.Debug().Msg("checking service account token")
+	claims, err := parseToken()
+	if err != nil {
+		SysLogger.Error().Err(err).Msg("failed to check the service account token")
+		return err
+	}
+	expirationTime, err := claims.GetExpirationTime()
+	if err != nil {
+		SysLogger.Error().Err(err).Msg("failed to get expiration time from service account token")
+		return err
+	}
+	if expirationTime.Before(time.Now()) {
+		SysLogger.Debug().Msg("service account token is expired, getting a new one")
+		err = loadToken()
+		if err != nil {
+			SysLogger.Error().Err(err).Msg("failed to load service account token")
+			return err
+		}
+		claims, err = parseToken()
+		if err != nil {
+			SysLogger.Error().Err(err).Msg("failed to parse the new service account token")
+			return err
+		}
+		expirationTime, err = claims.GetExpirationTime()
+		if err != nil {
+			SysLogger.Error().Err(err).Msg("failed to get expiration time from the new service account token")
+			return err
+		}
+		if expirationTime.Before(time.Now()) {
+			SysLogger.Error().Msg("new service account token is also expired")
+			return err
+		}
+	}
+	return nil
 }
 
 // execHandler is responsible for auditing exec request and allowing
