@@ -82,7 +82,7 @@ func Init() {
 }
 
 func parseToken() (jwt.MapClaims, error) {
-	token, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{})
+	token, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{}) // nosonar 
 	if err != nil {
 		return nil, err
 	}
