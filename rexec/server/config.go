@@ -31,6 +31,7 @@ var commandSync sync.Mutex
 var SecretSauce string
 var ByPassedUsers []string
 var MaxStokesPerLine int
+var tokenSync sync.Mutex
 
 func Init() {
 	auditLevel := zerolog.InfoLevel

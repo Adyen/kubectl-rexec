@@ -55,7 +55,7 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	r.Header.Add("Kubectl-Command", "kubectl exec")
 
 	// we check if the initially loaded jwt is still valid, if not we refresh it
-	err := checkToken()
+	err := ensureValidToken()
 	if err != nil {
 		SysLogger.Error().Err(err).Msg("failed to check the service account token")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -183,7 +183,7 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func checkToken() error {
+func ensureValidToken() error {
 	SysLogger.Debug().Msg("checking service account token")
 	claims, err := parseToken()
 	if err != nil {
@@ -195,9 +195,11 @@ func checkToken() error {
 		SysLogger.Error().Err(err).Msg("failed to get expiration time from service account token")
 		return err
 	}
-	if expirationTime.Before(time.Now()) {
+	if expirationTime.Before(time.Now().Add(60 * time.Second)) {
 		SysLogger.Debug().Msg("service account token is expired, getting a new one")
+		tokenSync.Lock()
 		err = loadToken()
+		tokenSync.Unlock()
 		if err != nil {
 			SysLogger.Error().Err(err).Msg("failed to load service account token")
 			return err
@@ -212,9 +214,9 @@ func checkToken() error {
 			SysLogger.Error().Err(err).Msg("failed to get expiration time from the new service account token")
 			return err
 		}
-		if expirationTime.Before(time.Now()) {
+		if expirationTime.Before(time.Now().Add(60 * time.Second)) {
 			SysLogger.Error().Msg("new service account token is also expired")
-			return err
+			return errors.New("new service account token is also expired")
 		}
 	}
 	return nil
