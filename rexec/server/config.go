@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
@@ -30,6 +31,7 @@ var commandSync sync.Mutex
 var SecretSauce string
 var ByPassedUsers []string
 var MaxStokesPerLine int
+var tokenSync sync.Mutex
 
 func Init() {
 	auditLevel := zerolog.InfoLevel
@@ -51,13 +53,12 @@ func Init() {
 	}
 	CAPool = x509.NewCertPool()
 	CAPool.AppendCertsFromPEM(rawCaCert)
-	rawToken, err := os.ReadFile(tokenPath)
+	err = loadToken()
 	if err != nil {
-		SysLogger.Error().Err(err).Msg("failed to read the service account token")
+		SysLogger.Error().Err(err).Msg("failed to load the service account token")
 		exitFn(1)
 		return
 	}
-	token = string(rawToken)
 	proxyMap = make(map[string]bool)
 	userMap = make(map[string]string)
 	commandMap = make(map[string][]byte)
@@ -79,6 +80,25 @@ func Init() {
 	}
 
 	go asyncAuditor()
+}
+
+func parseToken() (jwt.MapClaims, error) {
+	// we do not need to do any actual validation on this jwt, as it will be validated by k8s api server
+	// anyway, so we just parse it and return the claims, so we can check the expiration time
+	token, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{}) // nosonar
+	if err != nil {
+		return nil, err
+	}
+	return token.Claims.(jwt.MapClaims), nil
+}
+
+func loadToken() error {
+	rawToken, err := os.ReadFile(tokenPath)
+	if err != nil {
+		return err
+	}
+	token = string(rawToken)
+	return nil
 }
 
 func logCommand(command, user, ctxid string) {
