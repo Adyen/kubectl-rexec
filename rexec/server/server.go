@@ -94,19 +94,8 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// first fetch the command parameters from the url params to check what commands were passed
-	// initially to the container
-	var initialCommand []string
-	needsRecording := false
-	for key, value := range params {
-		if key == "command" {
-			initialCommand = append(initialCommand, value...)
-		}
-		// we also check whether tty was requested, if so we will need to record the session
-		if key == "tty" {
-			needsRecording = true
-		}
-	}
+	initialCommand, needsRecording, container := parseParams(params)
+	clientIP := getIP(r)
 
 	if !needsRecording {
 		// if we dont need any recording, we just pass the request back to the kube apiserver
@@ -124,7 +113,7 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 		// Log initial command as an audit event
 		// as oneoff, since we dont do tty so there
 		// wont be a recording and a session id
-		logCommand(strings.Join(initialCommand, " "), user, "oneoff")
+		logCommand(strings.Join(initialCommand, " "), user, "oneoff", namespace, pod, container, clientIP)
 
 		proxy.FlushInterval = -1
 
@@ -139,8 +128,15 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), "sessionID", ctxid)
 
 		// we save the session id into a map with the user's identity
+		// the namespace and pod are also saved for easier lookup
 		mapSync.Lock()
-		userMap[ctxid] = user
+		sessionMap[ctxid] = sessionInfo{
+			User:      user,
+			NameSpace: namespace,
+			Pod:       pod,
+			Container: container,
+			ClientIP:  clientIP,
+		}
 		mapSync.Unlock()
 
 		// we set the previously generated context to the request
@@ -148,7 +144,7 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Log initial command as an audit event
 		// with session id
-		logCommand(strings.Join(initialCommand, " "), user, ctxid)
+		logCommand(strings.Join(initialCommand, " "), user, ctxid, namespace, pod, container, clientIP)
 
 		// we start up a tcp forwarder for the session
 		go tcpForwarder(ctx)
@@ -306,4 +302,39 @@ func canPass(rv admissionv1.AdmissionReview) bool {
 		}
 	}
 	return false
+}
+
+func getIP(r *http.Request) string {
+	// 1. Try X-Forwarded-For (can be a comma-separated list)
+	clientIP := r.Header.Get("X-Forwarded-For")
+
+	// 2. Fallback to X-Real-IP
+	if clientIP == "" {
+		clientIP = r.Header.Get("X-Real-IP")
+	}
+
+	// 3. Last resort: The direct connection IP
+	if clientIP == "" {
+		clientIP = r.RemoteAddr
+	}
+	return clientIP
+}
+
+func parseParams(params url.Values) (command []string, ttyRequested bool, container string) {
+	// first fetch the command parameters from the url params to check what commands were passed
+	// initially to the container
+	for key, value := range params {
+		if key == "command" {
+			command = value
+		}
+		// we also check whether tty was requested, if so we will need to record the session
+		if key == "tty" {
+			ttyRequested = true
+		}
+		// check for container param
+		if key == "container" && len(value) > 0 {
+			container = value[0]
+		}
+	}
+	return command, ttyRequested, container
 }

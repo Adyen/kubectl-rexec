@@ -16,9 +16,17 @@ var (
 	exitFn    = os.Exit // to be able to override in the tests
 )
 
+type sessionInfo struct {
+	User      string
+	NameSpace string
+	Pod       string
+	Container string
+	ClientIP  string
+}
+
 var token string
 var proxyMap map[string]bool
-var userMap map[string]string
+var sessionMap map[string]sessionInfo
 var mapSync sync.Mutex
 var SysLogger zerolog.Logger
 var auditLogger zerolog.Logger
@@ -60,7 +68,7 @@ func Init() {
 		return
 	}
 	proxyMap = make(map[string]bool)
-	userMap = make(map[string]string)
+	sessionMap = make(map[string]sessionInfo)
 	commandMap = make(map[string][]byte)
 	asyncAuditChan = make(chan asyncAudit)
 
@@ -101,8 +109,8 @@ func loadToken() error {
 	return nil
 }
 
-func logCommand(command, user, ctxid string) {
-	auditLogger.Info().Str("user", user).Str("session", ctxid).Str("command", command).Msg("")
+func logCommand(command, user, ctxid, namespace, pod, container, clientIP string) {
+	auditLogger.Info().Str("user", user).Str("session", ctxid).Str("namespace", namespace).Str("pod", pod).Str("container", container).Str("client_ip", clientIP).Str("command", command).Msg("")
 }
 
 var httpSpec = `
