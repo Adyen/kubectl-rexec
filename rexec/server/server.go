@@ -46,6 +46,19 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	pod := pathParams["pod"]
 	user := r.Header.Get("X-Remote-User")
 
+	// 1. Try X-Forwarded-For (can be a comma-separated list)
+	clientIP := r.Header.Get("X-Forwarded-For")
+
+	// 2. Fallback to X-Real-IP
+	if clientIP == "" {
+		clientIP = r.Header.Get("X-Real-IP")
+	}
+
+	// 3. Last resort: The direct connection IP
+	if clientIP == "" {
+		clientIP = r.RemoteAddr
+	}
+
 	// if any of the minimal parameters are missing we should bail
 	if user == "" || namespace == "" || pod == "" {
 		w.WriteHeader(http.StatusForbidden)
@@ -97,6 +110,7 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	// first fetch the command parameters from the url params to check what commands were passed
 	// initially to the container
 	var initialCommand []string
+	c := "0"
 	needsRecording := false
 	for key, value := range params {
 		if key == "command" {
@@ -105,6 +119,10 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 		// we also check whether tty was requested, if so we will need to record the session
 		if key == "tty" {
 			needsRecording = true
+		}
+		// check for container param
+		if key == "container" && len(value) > 0 {
+			c = value[0]
 		}
 	}
 
@@ -124,7 +142,7 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 		// Log initial command as an audit event
 		// as oneoff, since we dont do tty so there
 		// wont be a recording and a session id
-		logCommand(strings.Join(initialCommand, " "), user, "oneoff")
+		logCommand(strings.Join(initialCommand, " "), user, "oneoff", namespace, pod, c, clientIP)
 
 		proxy.FlushInterval = -1
 
@@ -139,8 +157,15 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), "sessionID", ctxid)
 
 		// we save the session id into a map with the user's identity
+		// the namespace and pod are also saved for easier lookup
 		mapSync.Lock()
-		userMap[ctxid] = user
+		sessionMap[ctxid] = sessionInfo{
+			User:      user,
+			NameSpace: namespace,
+			Pod:       pod,
+			Container: c,
+			ClientIP:  clientIP,
+		}
 		mapSync.Unlock()
 
 		// we set the previously generated context to the request
@@ -148,7 +173,7 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Log initial command as an audit event
 		// with session id
-		logCommand(strings.Join(initialCommand, " "), user, ctxid)
+		logCommand(strings.Join(initialCommand, " "), user, ctxid, namespace, pod, c, clientIP)
 
 		// we start up a tcp forwarder for the session
 		go tcpForwarder(ctx)

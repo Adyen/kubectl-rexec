@@ -61,7 +61,7 @@ func tcpForwarder(ctx context.Context) {
 	os.Remove(socketPath)
 	mapSync.Lock()
 	delete(proxyMap, ctxid)
-	delete(userMap, ctxid)
+	delete(sessionMap, ctxid)
 	mapSync.Unlock()
 
 	commandSync.Lock()
@@ -120,7 +120,7 @@ func (t *TCPLogger) Write(b []byte) (n int, err error) {
 					if err != nil {
 						SysLogger.Error().Err(err).Msg("failed to parse payload")
 					}
-					auditLogger.Trace().Str("user", userMap[t.ctxid]).Str("session", t.ctxid).Str("stroke", strings.ReplaceAll(string(stroke), "\u0000", "")).Msg("")
+					auditLogger.Trace().Str("user", sessionMap[t.ctxid].User).Str("session", t.ctxid).Str("namespace", sessionMap[t.ctxid].NameSpace).Str("pod", sessionMap[t.ctxid].Pod).Str("container", sessionMap[t.ctxid].Container).Str("client_ip", sessionMap[t.ctxid].ClientIP).Str("stroke", strings.ReplaceAll(string(stroke), "\u0000", "")).Msg("")
 				}
 				asyncAuditChan <- asyncAudit{
 					ctxid: t.ctxid,

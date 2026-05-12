@@ -28,7 +28,7 @@ func storeOrFlush(audit asyncAudit) {
 			commandSync.Unlock()
 		case 13:
 			commandSync.Lock()
-			logCommand(string(commandMap[audit.ctxid]), userMap[audit.ctxid], audit.ctxid)
+			logCommand(string(commandMap[audit.ctxid]), sessionMap[audit.ctxid].User, audit.ctxid, sessionMap[audit.ctxid].NameSpace, sessionMap[audit.ctxid].Pod, sessionMap[audit.ctxid].Container, sessionMap[audit.ctxid].ClientIP)
 			commandMap[audit.ctxid] = nil
 			commandSync.Unlock()
 		default:
@@ -36,7 +36,7 @@ func storeOrFlush(audit asyncAudit) {
 			// to prevent oom kills by shoving too much input into one line
 			// we flush after the amount of strokes set in MaxStokesPerLine
 			if len(commandMap[audit.ctxid]) > MaxStokesPerLine {
-				logCommand(string(commandMap[audit.ctxid]), userMap[audit.ctxid], audit.ctxid)
+				logCommand(string(commandMap[audit.ctxid]), sessionMap[audit.ctxid].User, audit.ctxid, sessionMap[audit.ctxid].NameSpace, sessionMap[audit.ctxid].Pod, sessionMap[audit.ctxid].Container, sessionMap[audit.ctxid].ClientIP)
 				commandMap[audit.ctxid] = nil
 			}
 			commandMap[audit.ctxid] = append(commandMap[audit.ctxid], ascii)
