@@ -1,0 +1,30 @@
+name: goreleaser
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@82b4a1b876a44c770428d098e945c71a39678e24 # v6
+        with:
+          go-version: '1.25'
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@5c9f59267e174b0113f8c5c99665f80b2d69f064 # v7
+        with:
+          distribution: goreleaser
+          version: v2.15.4
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

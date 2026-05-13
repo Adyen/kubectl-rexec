@@ -1,0 +1,16 @@
+builds:
+  - id: "kubectl-rexec"
+    main: ./main.go
+    
+    binary: kubectl-rexec
+    
+    env:
+      - CGO_ENABLED=0
+    
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
