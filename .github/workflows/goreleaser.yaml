@@ -17,11 +17,11 @@ jobs:
         with:
           fetch-depth: 0
       - name: Set up Go
-        uses: actions/setup-go@82b4a1b876a44c770428d098e945c71a39678e24 # v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version: '1.25'
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@5c9f59267e174b0113f8c5c99665f80b2d69f064 # v7
+        uses: goreleaser/goreleaser-action@1a80836c5c9d9e5755a25cb59ec6f45a3b5f41a8 # v7
         with:
           distribution: goreleaser
           version: v2.15.4
