@@ -1,4 +1,4 @@
-FROM golang:1.25-bookworm@sha256:558391ad752c782d9e399ae4774c1b6ae8b1741028b4160bcddbb8377a53c61b AS builder
+FROM golang:1.25-bookworm@sha256:154bd7001b6eb339e88c964442c0ad6ed5e53f09844cc818a41ce4ecb3ce3b43 AS builder
 
 LABEL org.opencontainers.image.source=https://github.com/adyen/kubectl-rexec
 LABEL org.opencontainers.image.description="Rexec proxy"
