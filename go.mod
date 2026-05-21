@@ -1,6 +1,6 @@
 module github.com/adyen/kubectl-rexec
 
-go 1.25.0
+go 1.26.3
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
