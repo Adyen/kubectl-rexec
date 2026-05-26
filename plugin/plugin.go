@@ -95,7 +95,7 @@ func Rexec() {
 			argsLenAtDash := cmd.ArgsLenAtDash()
 			cmdutil.CheckErr(roptions.ExecOptions.Complete(f, cmd, args, argsLenAtDash))
 			cmdutil.CheckErr(roptions.ExecOptions.Validate())
-			cmdutil.CheckErr(roptions.rexecRun())
+			cmdutil.CheckErr(roptions.rexecRun(cmd.Context()))
 		},
 	}
 
@@ -145,10 +145,10 @@ func NewRexecOptions(e *cmdexec.ExecOptions) *RexecOptoins {
 // mostly copy paste of the upstream Run() command
 // with the minimal adjustment to call a different
 // endpoint
-func (r *RexecOptoins) rexecRun() error {
+func (r *RexecOptoins) rexecRun(ctx context.Context) error {
 	var err error
 	if len(r.PodName) != 0 {
-		r.Pod, err = r.PodClient.Pods(r.ExecOptions.Namespace).Get(context.TODO(), r.ExecOptions.PodName, metav1.GetOptions{})
+		r.Pod, err = r.PodClient.Pods(r.ExecOptions.Namespace).Get(ctx, r.ExecOptions.PodName, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
