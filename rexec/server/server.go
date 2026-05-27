@@ -1,8 +1,6 @@
 package server
 
 import (
-	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,86 +95,26 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	initialCommand, needsRecording, container := parseParams(params)
 	clientIP := getIP(r)
 
+	apiServerURL, _ := url.Parse("https://" + net.JoinHostPort(apiServerHost, "443"))
+	proxy := httputil.NewSingleHostReverseProxy(apiServerURL)
+	proxy.FlushInterval = -1
+	cmd := strings.Join(initialCommand, " ")
+
 	if !needsRecording {
-		// if we dont need any recording, we just pass the request back to the kube apiserver
-		url, _ := url.Parse("https://kubernetes.default.svc.cluster.local:443")
-		proxy := httputil.NewSingleHostReverseProxy(url)
-
-		proxy.Transport = &http.Transport{
-			DisableKeepAlives:  true,
-			DisableCompression: true,
-			TLSClientConfig: &tls.Config{
-				RootCAs: CAPool,
-			},
-		}
-
-		// Log initial command as an audit event
-		// as oneoff, since we dont do tty so there
-		// wont be a recording and a session id
-		logCommand(strings.Join(initialCommand, " "), user, "oneoff", namespace, pod, container, clientIP)
-
-		proxy.FlushInterval = -1
-
+		proxy.Transport = apiServerTransport()
+		logCommand(cmd, user, "oneoff", namespace, pod, container, clientIP)
 		proxy.ServeHTTP(w, r)
-	} else {
-		// in the case of recording we will pass the request through a tcp proxy to make it easier
-		// to actually monitor what is being typed in to the shell
-
-		// we begin to generate a uuid for the session and we set it as the id of a context
-		// we will use this id to keep track what use the session belongs to
-		ctxid := uuid.New().String()
-		ctx := context.WithValue(r.Context(), "sessionID", ctxid)
-
-		// we save the session id into a map with the user's identity
-		// the namespace and pod are also saved for easier lookup
-		mapSync.Lock()
-		sessionMap[ctxid] = sessionInfo{
-			User:      user,
-			NameSpace: namespace,
-			Pod:       pod,
-			Container: container,
-			ClientIP:  clientIP,
-		}
-		mapSync.Unlock()
-
-		// we set the previously generated context to the request
-		r = r.WithContext(ctx)
-
-		// Log initial command as an audit event
-		// with session id
-		logCommand(strings.Join(initialCommand, " "), user, ctxid, namespace, pod, container, clientIP)
-
-		// we start up a tcp forwarder for the session
-		go tcpForwarder(ctx)
-
-		// we need to wait a bit until the listener is actually there
-		// probably there are 10 more sophisticated ways to do this
-		// but it is not important now
-		err = waitForListener(ctxid)
-		if err != nil {
-			SysLogger.Error().Err(err).Msg("waiting for listener")
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(httpInternalError))
-			return
-		}
-
-		// url does not really matter we are going through the socket anyway
-		url, _ := url.Parse("http://localhost:8080")
-		proxy := httputil.NewSingleHostReverseProxy(url)
-
-		proxy.Transport = &http.Transport{
-			DisableKeepAlives:  true,
-			DisableCompression: true,
-			// we are forcing the reverse proxy to go through our socket
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return net.Dial("unix", fmt.Sprintf("/%s", ctxid))
-			},
-		}
-
-		proxy.FlushInterval = -1
-
-		proxy.ServeHTTP(w, r)
+		return
 	}
+
+	// tty exec audit keystrokes on tls conn see tcplogger
+	ctxid := uuid.New().String()
+	registerSession(ctxid, user, namespace, pod, container, clientIP)
+	defer endSession(ctxid)
+
+	logCommand(cmd, user, ctxid, namespace, pod, container, clientIP)
+	proxy.Transport = auditedAPIServerTransport(ctxid)
+	proxy.ServeHTTP(w, r)
 }
 
 func ensureValidToken() error {
@@ -257,26 +195,6 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(respBytes)
-}
-
-// waitForListener is checking whether the tcp forwarder
-// is ready or not, if it is not there after 5 secs
-// it bails
-func waitForListener(listener string) error {
-	// again, super lazy but it is fine for now
-	for i := 0; i < 5; i++ {
-		isSocketReady := false
-		mapSync.Lock()
-		isSocketReady = proxyMap[listener]
-		mapSync.Unlock()
-		if isSocketReady {
-			SysLogger.Debug().Msgf("socket became ready on try %d", i)
-			return nil
-		}
-		SysLogger.Debug().Msgf("waiting for socket on try %d", i)
-		time.Sleep(1 * time.Second)
-	}
-	return errors.New("socket was not ready in time")
 }
 
 // canPass checks whether the exec request is allowed

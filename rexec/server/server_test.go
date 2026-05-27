@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/gorilla/mux"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -208,29 +207,6 @@ func TestCanPassNoMatch(t *testing.T) {
 		"secret-sauce": {"the-wrong-sauce"}})
 	if canPass(rv) {
 		t.Fatal("expected canPass false when neither bypass nor sauce matches")
-	}
-}
-
-// --- waitForListener unit test ---
-
-func TestWaitForListenerReady(t *testing.T) {
-	// Save/restore shared map
-	oldProxyMap := proxyMap
-	t.Cleanup(func() { proxyMap = oldProxyMap })
-
-	// Use a fresh map for isolation
-	proxyMap = map[string]bool{}
-
-	// Mark ready before call so it should return quickly
-	id := "session-123"
-	proxyMap[id] = true
-
-	start := time.Now()
-	if err := waitForListener(id); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if time.Since(start) > time.Second {
-		t.Fatalf("waitForListener returned too slowly")
 	}
 }
 

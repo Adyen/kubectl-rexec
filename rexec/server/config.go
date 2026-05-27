@@ -25,7 +25,6 @@ type sessionInfo struct {
 }
 
 var token string
-var proxyMap map[string]bool
 var sessionMap map[string]sessionInfo
 var mapSync sync.Mutex
 var SysLogger zerolog.Logger
@@ -67,7 +66,6 @@ func Init() {
 		exitFn(1)
 		return
 	}
-	proxyMap = make(map[string]bool)
 	sessionMap = make(map[string]sessionInfo)
 	commandMap = make(map[string][]byte)
 	asyncAuditChan = make(chan asyncAudit)
