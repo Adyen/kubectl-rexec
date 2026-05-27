@@ -63,16 +63,22 @@ func registerSession(ctxid, user, namespace, pod, container, clientIP string) {
 		User: user, NameSpace: namespace, Pod: pod, Container: container, ClientIP: clientIP,
 	}
 	mapSync.Unlock()
+	logSessionEvent("session_start", user, ctxid, namespace, pod, container, clientIP)
 }
 
 func endSession(ctxid string) {
 	mapSync.Lock()
+	info, ok := sessionMap[ctxid]
 	delete(sessionMap, ctxid)
 	mapSync.Unlock()
 
 	commandSync.Lock()
 	delete(commandMap, ctxid)
 	commandSync.Unlock()
+
+	if ok {
+		logSessionEvent("session_end", info.User, ctxid, info.NameSpace, info.Pod, info.Container, info.ClientIP)
+	}
 }
 
 // tcplogger is on client to apiserver websocket direction
