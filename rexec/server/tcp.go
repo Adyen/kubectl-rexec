@@ -5,129 +5,134 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"net"
-	"os"
+	"net/http"
 	"strings"
 
 	"github.com/rs/zerolog"
 )
 
-const (
-	targetAddress = "kubernetes.default.svc.cluster.local:443"
-)
+const apiServerHost = "kubernetes.default.svc.cluster.local"
 
-func tcpForwarder(ctx context.Context) {
-	lc := net.ListenConfig{}
+func apiServerTLSConfig() *tls.Config {
+	return &tls.Config{
+		RootCAs:    CAPool,
+		ServerName: apiServerHost,
+	}
+}
 
-	ctxid := ctx.Value("sessionID").(string)
-	socketPath := fmt.Sprintf("/%s", ctxid)
+func baseAPIServerTransport() *http.Transport {
+	return &http.Transport{
+		DisableKeepAlives:  true,
+		DisableCompression: true,
+	}
+}
 
-	// we setup a unix listener for the specific session
-	listener, err := lc.Listen(ctx, "unix", socketPath)
+// non-tty exec goes straight to apiserver tls without keystroke logging
+func apiServerTransport() *http.Transport {
+	tr := baseAPIServerTransport()
+	tr.TLSClientConfig = apiServerTLSConfig()
+	return tr
+}
+
+// tty exec uses tls conn wrapped in tcplogger so we can audit keystrokes
+func auditedAPIServerTransport(sessionID string) *http.Transport {
+	tr := baseAPIServerTransport()
+	tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialAuditedConn(ctx, sessionID)
+	}
+	return tr
+}
+
+func dialAuditedConn(ctx context.Context, sessionID string) (net.Conn, error) {
+	raw, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(apiServerHost, "443"))
 	if err != nil {
-		SysLogger.Error().Err(err).Msgf("failed to start listener for %s", ctxid)
-		return
+		return nil, err
 	}
-	defer listener.Close()
+	tlsConn := tls.Client(raw, apiServerTLSConfig())
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		raw.Close()
+		return nil, err
+	}
+	return &TCPLogger{Conn: tlsConn, ctxid: sessionID}, nil
+}
 
-	SysLogger.Debug().Msgf("starting personal tcp forwarer at %s", socketPath)
-
-	// in a cheap manner we signer back that it is ready
+func registerSession(ctxid, user, namespace, pod, container, clientIP string) {
 	mapSync.Lock()
-	proxyMap[ctxid] = true
+	sessionMap[ctxid] = sessionInfo{
+		User: user, NameSpace: namespace, Pod: pod, Container: container, ClientIP: clientIP,
+	}
 	mapSync.Unlock()
-	halt := false
-	for {
-		client, err := listener.Accept()
-		if err != nil {
-			SysLogger.Error().Err(err).Msgf("failed to accept connection at %s", ctxid)
-			continue
-		}
+	logSessionEvent("session_start", user, ctxid, namespace, pod, container, clientIP)
+}
 
-		// we pass the actual tcp connection
-		go handleTcpConnection(client, ctxid)
-		select {
-		// once the http session is gone we stop the listener
-		case <-ctx.Done():
-			SysLogger.Debug().Msgf("stopping personal tcp forwarer at %s", socketPath)
-			halt = true
-		}
-		if halt {
-			break
-		}
-	}
-	// once the http session is gone, the socket and the user and proxymaps are getting cleaned up
-	os.Remove(socketPath)
+func endSession(ctxid string) {
 	mapSync.Lock()
-	delete(proxyMap, ctxid)
+	info, ok := sessionMap[ctxid]
 	delete(sessionMap, ctxid)
 	mapSync.Unlock()
 
 	commandSync.Lock()
 	delete(commandMap, ctxid)
 	commandSync.Unlock()
-}
 
-func handleTcpConnection(client net.Conn, ctxid string) {
-	// setting up the upstream connection
-	target, err := tls.Dial("tcp", targetAddress, &tls.Config{RootCAs: CAPool})
-	if err != nil {
-		SysLogger.Error().Err(err).Msgf("failed to connect to upstream at %s", ctxid)
-		client.Close()
-		return
+	if ok {
+		logSessionEvent("session_end", info.User, ctxid, info.NameSpace, info.Pod, info.Container, info.ClientIP)
 	}
-	defer target.Close()
-
-	// we are creating an instance of TCPLogger
-	// which implements net.conn and custom logging
-	// with the context of the user we are logging
-	// traffic for
-	tcpLogger := &TCPLogger{Conn: target, ctxid: ctxid}
-
-	// on the way toward the target we send the traffic
-	// through the tcp logger
-	go io.Copy(tcpLogger, client)
-	// on the way back however we dont want to log anything
-	io.Copy(client, target)
-	client.Close()
 }
 
+// tcplogger is on client to apiserver websocket direction
+// write path is audited read path is pass through only
 type TCPLogger struct {
 	net.Conn
 	ctxid string
 }
 
-func (t *TCPLogger) Read(b []byte) (n int, err error) {
-	n, err = t.Conn.Read(b)
-	return
-}
-
 func (t *TCPLogger) Write(b []byte) (n int, err error) {
 	n, err = t.Conn.Write(b)
 	if n > 0 {
-		// we need parse the websockter frame
-		frame, err := parseWebSocketFrame(b)
-		if err != nil {
-			SysLogger.Error().Err(err).Msg("failed to parse ws frame")
-		}
-		if frame != nil {
-			// if it is opscode 0x2 we log out
-			// activities
-			if frame.Opcode == 0x2 {
-				if auditLogger.GetLevel() == zerolog.TraceLevel {
-					stroke, err := hex.DecodeString(fmt.Sprintf("%x", frame.Payload))
-					if err != nil {
-						SysLogger.Error().Err(err).Msg("failed to parse payload")
-					}
-					auditLogger.Trace().Str("user", sessionMap[t.ctxid].User).Str("session", t.ctxid).Str("namespace", sessionMap[t.ctxid].NameSpace).Str("pod", sessionMap[t.ctxid].Pod).Str("container", sessionMap[t.ctxid].Container).Str("client_ip", sessionMap[t.ctxid].ClientIP).Str("stroke", strings.ReplaceAll(string(stroke), "\u0000", "")).Msg("")
-				}
-				asyncAuditChan <- asyncAudit{
-					ctxid: t.ctxid,
-					ascii: frame.Payload,
-				}
-			}
-		}
+		t.auditClientFrame(b[:n])
 	}
-	return
+	return n, err
+}
+
+func (t *TCPLogger) auditClientFrame(frameBytes []byte) {
+	parsed, err := parseWebSocketFrame(frameBytes)
+	if err != nil {
+		SysLogger.Error().Err(err).Msg("failed to parse ws frame")
+		return
+	}
+	// websocket opcodes we might see: 0x0 continuation 0x1 text 0x2 binary
+	// 0x8 close 0x9 ping 0xA pong
+	// kubectl exec sends terminal input as 0x2 binary only that goes to async audit
+	if parsed == nil || parsed.Opcode != 0x2 {
+		return
+	}
+
+	if auditLogger.GetLevel() == zerolog.TraceLevel {
+		t.logTraceStroke(parsed.Payload)
+	}
+	asyncAuditChan <- asyncAudit{ctxid: t.ctxid, ascii: parsed.Payload}
+}
+
+func (t *TCPLogger) logTraceStroke(payload []byte) {
+	info, ok := sessionMap[t.ctxid]
+	if !ok {
+		return
+	}
+	stroke, err := hex.DecodeString(fmt.Sprintf("%x", payload))
+	if err != nil {
+		SysLogger.Error().Err(err).Msg("failed to parse payload")
+		return
+	}
+	auditLogger.Trace().
+		Str("user", info.User).
+		Str("session", t.ctxid).
+		Str("namespace", info.NameSpace).
+		Str("pod", info.Pod).
+		Str("container", info.Container).
+		Str("client_ip", info.ClientIP).
+		// tty payload has nul bytes strip for trace log
+		Str("stroke", strings.ReplaceAll(string(stroke), "\u0000", "")).
+		Msg("")
 }

@@ -25,7 +25,6 @@ type sessionInfo struct {
 }
 
 var token string
-var proxyMap map[string]bool
 var sessionMap map[string]sessionInfo
 var mapSync sync.Mutex
 var SysLogger zerolog.Logger
@@ -67,7 +66,6 @@ func Init() {
 		exitFn(1)
 		return
 	}
-	proxyMap = make(map[string]bool)
 	sessionMap = make(map[string]sessionInfo)
 	commandMap = make(map[string][]byte)
 	asyncAuditChan = make(chan asyncAudit)
@@ -111,6 +109,10 @@ func loadToken() error {
 
 func logCommand(command, user, ctxid, namespace, pod, container, clientIP string) {
 	auditLogger.Info().Str("user", user).Str("session", ctxid).Str("namespace", namespace).Str("pod", pod).Str("container", container).Str("client_ip", clientIP).Str("command", command).Msg("")
+}
+
+func logSessionEvent(event, user, ctxid, namespace, pod, container, clientIP string) {
+	auditLogger.Info().Str("event", event).Str("user", user).Str("session", ctxid).Str("namespace", namespace).Str("pod", pod).Str("container", container).Str("client_ip", clientIP).Msg("")
 }
 
 var httpSpec = `
