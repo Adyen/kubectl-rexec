@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -83,7 +82,7 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	oldPath := fmt.Sprintf("apis/audit.adyen.internal/v1beta1/namespaces/%s/pods/%s/exec", namespace, pod)
 	r.URL.Path = strings.ReplaceAll(r.URL.Path, oldPath, newPath)
 	r.URL.RawPath = strings.ReplaceAll(r.URL.RawPath, oldPath, newPath)
-	r.Host = "kubernetes.default.svc.cluster.local:443"
+	r.Host = apiServerHost + ":443"
 
 	params, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
@@ -95,7 +94,7 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	initialCommand, needsRecording, container := parseParams(params)
 	clientIP := getIP(r)
 
-	apiServerURL, _ := url.Parse("https://" + net.JoinHostPort(apiServerHost, "443"))
+	apiServerURL, _ := url.Parse("https://" + apiServerDial)
 	proxy := httputil.NewSingleHostReverseProxy(apiServerURL)
 	proxy.FlushInterval = -1
 	cmd := strings.Join(initialCommand, " ")

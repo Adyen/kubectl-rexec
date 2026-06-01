@@ -52,6 +52,8 @@ func Init() {
 	auditLogger = zerolog.New(os.Stdout).With().Timestamp().Str("facility", "audit").Logger().Level(auditLevel)
 	SysLogger = zerolog.New(os.Stdout).With().Timestamp().Str("facility", "sys").Logger().Level(sysLevel)
 
+	initAPIServer()
+
 	rawCaCert, err := os.ReadFile(caPath)
 	if err != nil {
 		SysLogger.Error().Err(err).Msg("failed to read the CA certificate")
