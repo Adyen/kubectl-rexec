@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,13 +32,43 @@ func Server() {
 	// handle native pod exec through a validating webhook
 	r.HandleFunc("/validate-exec", execHandler)
 
-	// start tls listener
-	http.ListenAndServeTLS(":8443", "/etc/pki/rexec/tls.crt", "/etc/pki/rexec/tls.key", r)
+	// start tls listener.
+	//
+	// ClientCAs is the front-proxy (requestheader) CA published by the
+	// kube-apiserver. VerifyClientCertIfGiven makes the handshake validate any
+	// client certificate presented against it, so rexecHandler can require a
+	// verified front-proxy identity before trusting impersonation headers. We do
+	// not RequireAndVerifyClientCert at the listener because the admission
+	// webhook (/validate-exec) is served on the same port and the apiserver does
+	// not necessarily present a requestheader certificate when calling it.
+	srv := &http.Server{
+		Addr:    ":8443",
+		Handler: r,
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ClientCAs:  RequestHeaderCAPool,
+			ClientAuth: tls.VerifyClientCertIfGiven,
+		},
+	}
+	if err := srv.ListenAndServeTLS("/etc/pki/rexec/tls.crt", "/etc/pki/rexec/tls.key"); err != nil {
+		SysLogger.Fatal().Err(err).Msg("rexec server terminated")
+	}
 }
 
 // rexecHandler is responsible for rewrite the request to an exec request
 // and proxy it back to k8s api
 func rexecHandler(w http.ResponseWriter, r *http.Request) {
+	// reject anything that is not authenticated as the kube-apiserver
+	// aggregation layer. without this check a caller able to reach the backend
+	// directly could supply arbitrary X-Remote-User / X-Remote-Group headers and
+	// have us impersonate any user (including system:masters).
+	if !verifiedFrontProxy(r) {
+		SysLogger.Error().Str("client_ip", getIP(r)).Msg("rejected exec request: missing or untrusted front-proxy client certificate")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(httpForbidden))
+		return
+	}
+
 	// parsing for vars
 	pathParams := mux.Vars(r)
 	namespace := pathParams["namespace"]
