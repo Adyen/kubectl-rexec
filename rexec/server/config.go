@@ -85,6 +85,15 @@ func Init() {
 		MaxStokesPerLine = 2000
 	}
 
+	// load the front-proxy CA so inbound exec requests can be authenticated as
+	// genuinely coming from the kube-apiserver aggregation layer before we trust
+	// their impersonation headers. fail closed if it cannot be loaded.
+	if err = loadFrontProxyConfig(); err != nil {
+		SysLogger.Error().Err(err).Msg("failed to load the front-proxy (requestheader) configuration")
+		exitFn(1)
+		return
+	}
+
 	go asyncAuditor()
 }
 
