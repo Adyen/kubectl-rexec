@@ -19,6 +19,7 @@ func main() {
 	cmd.Flags().StringArrayVar(&server.ByPassedUsers, "by-pass-user", []string{}, "allow user to bypass webhook restriction")
 	cmd.Flags().StringVar(&server.SecretSauce, "by-pass-shared-key", "", "shared key between apiservice and validatingwebhook")
 	cmd.Flags().IntVar(&server.MaxStokesPerLine, "max-strokes-per-line", 0, "set how much keystores can be held in the async audit before flush")
+	cmd.Flags().StringVar(&server.ClusterDomain, "cluster-domain", "", "cluster DNS domain (default: detect or cluster.local)")
 	err := cmd.Execute()
 	if err != nil {
 		server.SysLogger.Fatal().Msg(err.Error())

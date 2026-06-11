@@ -216,10 +216,12 @@ func initCleanup(t *testing.T) {
 	oldCAPath, oldTokenPath := caPath, tokenPath
 	oldSauce := SecretSauce
 	oldExitFn := exitFn
+	oldDomain := ClusterDomain
 	t.Cleanup(func() {
 		caPath, tokenPath = oldCAPath, oldTokenPath
 		SecretSauce = oldSauce
 		exitFn = oldExitFn
+		ClusterDomain = oldDomain
 	})
 }
 

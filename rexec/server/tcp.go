@@ -12,8 +12,6 @@ import (
 	"github.com/rs/zerolog"
 )
 
-const apiServerHost = "kubernetes.default.svc.cluster.local"
-
 func apiServerTLSConfig() *tls.Config {
 	return &tls.Config{
 		RootCAs:    CAPool,
@@ -45,7 +43,7 @@ func auditedAPIServerTransport(sessionID string) *http.Transport {
 }
 
 func dialAuditedConn(ctx context.Context, sessionID string) (net.Conn, error) {
-	raw, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(apiServerHost, "443"))
+	raw, err := (&net.Dialer{}).DialContext(ctx, "tcp", apiServerDial)
 	if err != nil {
 		return nil, err
 	}
