@@ -28,3 +28,20 @@ roleRef:
   kind: ClusterRole
   name: rexec-impersonator
   apiGroup: rbac.authorization.k8s.io
+---
+# allows reading the extension-apiserver-authentication ConfigMap so the server
+# can load the front-proxy (requestheader) CA used to authenticate inbound
+# aggregated API requests before trusting their impersonation headers.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rexec-extension-apiserver-authentication-reader
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+- kind: ServiceAccount
+  name: rexec-impersonator
+  namespace: kube-system

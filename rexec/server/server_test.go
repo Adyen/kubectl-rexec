@@ -2,6 +2,9 @@ package server
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -305,12 +308,75 @@ func TestInitInvalidSecretSauce(t *testing.T) {
 	}
 }
 
-// --- rexecHandler early validation test ---
+// --- rexecHandler early validation tests ---
 
-func TestRexecHandlerMissingUser(t *testing.T) {
-	// No X-Remote-User header
+// withFrontProxyCert returns the request with a TLS connection state that looks
+// like a verified front-proxy client certificate with the given common name, so
+// it passes verifiedFrontProxy.
+func withFrontProxyCert(req *http.Request, cn string) *http.Request {
+	req.TLS = &tls.ConnectionState{
+		VerifiedChains: [][]*x509.Certificate{{
+			{Subject: pkix.Name{CommonName: cn}},
+		}},
+	}
+	return req
+}
+
+func TestRexecHandlerRejectsWithoutFrontProxyCert(t *testing.T) {
+	oldNames := RequestHeaderAllowedNames
+	t.Cleanup(func() { RequestHeaderAllowedNames = oldNames })
+	RequestHeaderAllowedNames = nil
+
+	// A caller reaching the backend directly with a forged identity header but no
+	// trusted client certificate must be rejected before any impersonation.
 	req := httptest.NewRequest(http.MethodGet,
 		"/apis/audit.adyen.internal/v1beta1/namespaces/ns/pods/pod/exec", nil)
+	req.Header.Set("X-Remote-User", "attacker")
+	req.Header.Add("X-Remote-Group", "system:masters")
+	req = mux.SetURLVars(req, map[string]string{
+		"namespace": "ns",
+		"pod":       "pod",
+	})
+
+	rr := httptest.NewRecorder()
+	rexecHandler(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestRexecHandlerRejectsDisallowedCN(t *testing.T) {
+	oldNames := RequestHeaderAllowedNames
+	t.Cleanup(func() { RequestHeaderAllowedNames = oldNames })
+	RequestHeaderAllowedNames = []string{"front-proxy-client"}
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/apis/audit.adyen.internal/v1beta1/namespaces/ns/pods/pod/exec", nil)
+	req.Header.Set("X-Remote-User", "attacker")
+	req = withFrontProxyCert(req, "some-other-cn")
+	req = mux.SetURLVars(req, map[string]string{
+		"namespace": "ns",
+		"pod":       "pod",
+	})
+
+	rr := httptest.NewRecorder()
+	rexecHandler(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestRexecHandlerMissingUser(t *testing.T) {
+	oldNames := RequestHeaderAllowedNames
+	t.Cleanup(func() { RequestHeaderAllowedNames = oldNames })
+	RequestHeaderAllowedNames = nil
+
+	// Authenticated as the front proxy, but no X-Remote-User header.
+	req := httptest.NewRequest(http.MethodGet,
+		"/apis/audit.adyen.internal/v1beta1/namespaces/ns/pods/pod/exec", nil)
+	req = withFrontProxyCert(req, "front-proxy-client")
 	req = mux.SetURLVars(req, map[string]string{
 		"namespace": "ns",
 		"pod":       "pod",
@@ -322,5 +388,31 @@ func TestRexecHandlerMissingUser(t *testing.T) {
 
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+}
+
+func TestVerifiedFrontProxy(t *testing.T) {
+	oldNames := RequestHeaderAllowedNames
+	t.Cleanup(func() { RequestHeaderAllowedNames = oldNames })
+
+	noTLS := httptest.NewRequest(http.MethodGet, "/", nil)
+	if verifiedFrontProxy(noTLS) {
+		t.Fatal("expected false when no client certificate is presented")
+	}
+
+	RequestHeaderAllowedNames = nil
+	anyName := withFrontProxyCert(httptest.NewRequest(http.MethodGet, "/", nil), "whatever")
+	if !verifiedFrontProxy(anyName) {
+		t.Fatal("expected true for any verified name when allowed-names is empty")
+	}
+
+	RequestHeaderAllowedNames = []string{"front-proxy-client"}
+	good := withFrontProxyCert(httptest.NewRequest(http.MethodGet, "/", nil), "front-proxy-client")
+	if !verifiedFrontProxy(good) {
+		t.Fatal("expected true for an allowed common name")
+	}
+	bad := withFrontProxyCert(httptest.NewRequest(http.MethodGet, "/", nil), "nope")
+	if verifiedFrontProxy(bad) {
+		t.Fatal("expected false for a disallowed common name")
 	}
 }
