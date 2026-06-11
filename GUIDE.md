@@ -10,4 +10,4 @@
 
 `--max-strokes-per-line` with this flag we can alter the treshold we have on a linelength before async audit flushes, keep in mind the increasing it too high might lead oom kills on the rexec server
 
-`--cluster-domain` cluster DNS suffix for the kubernetes apiserver service (e.g. `corp.internal` instead of `cluster.local`). When unset, `CLUSTER_DOMAIN` env is used, then a CNAME lookup on `kubernetes.default.svc`, then `cluster.local`. Dialing uses `KUBERNETES_SERVICE_HOST` when present.
+`--cluster-domain` cluster DNS suffix for the kubernetes apiserver service (e.g. `corp.internal` instead of `cluster.local`). When unset, `CLUSTER_DOMAIN` env is used, then `cluster.local`. Dialing uses `KUBERNETES_SERVICE_HOST` when present.

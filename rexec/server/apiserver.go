@@ -3,7 +3,6 @@ package server
 import (
 	"net"
 	"os"
-	"strings"
 )
 
 const defaultClusterDomain = "cluster.local"
@@ -35,22 +34,5 @@ func clusterDomain() string {
 	if d := os.Getenv("CLUSTER_DOMAIN"); d != "" {
 		return d
 	}
-	if d := detectClusterDomain(); d != "" {
-		return d
-	}
 	return defaultClusterDomain
-}
-
-func detectClusterDomain() string {
-	const svc = "kubernetes.default.svc"
-	cname, err := net.LookupCNAME(svc)
-	if err != nil {
-		return ""
-	}
-	cname = strings.TrimSuffix(cname, ".")
-	prefix := svc + "."
-	if strings.HasPrefix(cname, prefix) {
-		return strings.TrimPrefix(cname, prefix)
-	}
-	return ""
 }
