@@ -13,9 +13,9 @@ type webSocketFrame struct {
 }
 
 // parseWebSocketFrame is for parsing websocket traffic
-func parseWebSocketFrame(data []byte) (*webSocketFrame, error) {
+func parseWebSocketFrame(data []byte) (*webSocketFrame, int, error) {
 	if len(data) < 2 {
-		return nil, errors.New("data too short to be a WebSocket frame")
+		return nil, 0, errors.New("data too short to be a WebSocket frame")
 	}
 
 	fin := data[0]&0x80 != 0
@@ -28,13 +28,13 @@ func parseWebSocketFrame(data []byte) (*webSocketFrame, error) {
 	switch payloadLen {
 	case 126:
 		if len(data) < 4 {
-			return nil, errors.New("data too short for extended payload length")
+			return nil, 0, errors.New("data too short for extended payload length")
 		}
 		payloadLen = int(binary.BigEndian.Uint16(data[2:4]))
 		offset = 4
 	case 127:
 		if len(data) < 10 {
-			return nil, errors.New("data too short for extended payload length")
+			return nil, 0, errors.New("data too short for extended payload length")
 		}
 		payloadLen = int(binary.BigEndian.Uint64(data[2:10]))
 		offset = 10
@@ -46,15 +46,21 @@ func parseWebSocketFrame(data []byte) (*webSocketFrame, error) {
 		offset += 4
 	}
 
-	var maskingKey []byte
-	if mask {
-		maskingKey = data[offset-4 : offset]
+	// offset can exceed len(data) for a masked frame whose 4 byte masking key is
+	// not fully present. So len(data)-offset would then be negative.
+	if offset > len(data) {
+		return nil, 0, errors.New("data too short for masking key")
+	}
+	if payloadLen < 0 || payloadLen > len(data)-offset {
+		return nil, 0, errors.New("data too short for declared payload length")
 	}
 
-	payload := data[offset:]
+	payload := make([]byte, payloadLen)
+	copy(payload, data[offset:offset+payloadLen])
 
 	if mask {
-		for i := 0; i < len(payload); i++ {
+		maskingKey := data[offset-4 : offset]
+		for i := range payload {
 			payload[i] ^= maskingKey[i%4]
 		}
 	}
@@ -64,5 +70,5 @@ func parseWebSocketFrame(data []byte) (*webSocketFrame, error) {
 		Opcode:  opcode,
 		Mask:    mask,
 		Payload: payload,
-	}, nil
+	}, offset + payloadLen, nil
 }

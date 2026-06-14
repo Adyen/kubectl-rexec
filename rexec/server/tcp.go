@@ -95,22 +95,29 @@ func (t *TCPLogger) Write(b []byte) (n int, err error) {
 }
 
 func (t *TCPLogger) auditClientFrame(frameBytes []byte) {
-	parsed, err := parseWebSocketFrame(frameBytes)
-	if err != nil {
-		SysLogger.Error().Err(err).Msg("failed to parse ws frame")
-		return
-	}
-	// websocket opcodes we might see: 0x0 continuation 0x1 text 0x2 binary
-	// 0x8 close 0x9 ping 0xA pong
-	// kubectl exec sends terminal input as 0x2 binary only that goes to async audit
-	if parsed == nil || parsed.Opcode != 0x2 {
-		return
-	}
+    // a single write operation may contain multiple combined frames. Continue
+    // parsing until the entire buffer has been processed to ensure no keystrokes
+    // are omitted from the audit log.
+	for len(frameBytes) > 0 {
+		parsed, consumed, err := parseWebSocketFrame(frameBytes)
+		if err != nil {
+			SysLogger.Error().Err(err).Msg("failed to parse ws frame")
+			return
+		}
+		frameBytes = frameBytes[consumed:]
 
-	if auditLogger.GetLevel() == zerolog.TraceLevel {
-		t.logTraceStroke(parsed.Payload)
+		// websocket opcodes we might see: 0x0 continuation 0x1 text 0x2 binary
+		// 0x8 close 0x9 ping 0xA pong
+		// kubectl exec sends terminal input as 0x2 binary only that goes to async audit
+		if parsed.Opcode != 0x2 {
+			continue
+		}
+
+		if auditLogger.GetLevel() == zerolog.TraceLevel {
+			t.logTraceStroke(parsed.Payload)
+		}
+		asyncAuditChan <- asyncAudit{ctxid: t.ctxid, ascii: parsed.Payload}
 	}
-	asyncAuditChan <- asyncAudit{ctxid: t.ctxid, ascii: parsed.Payload}
 }
 
 func (t *TCPLogger) logTraceStroke(payload []byte) {
