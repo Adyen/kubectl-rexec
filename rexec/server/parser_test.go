@@ -118,32 +118,36 @@ func TestParseWebSocketFrame(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			original := append([]byte(nil), tt.data...)
-
-			frame, consumed, err := parseWebSocketFrame(tt.data)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got frame %+v", frame)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if frame.Opcode != tt.wantOpcode {
-				t.Errorf("opcode = %#x, want %#x", frame.Opcode, tt.wantOpcode)
-			}
-			if !bytes.Equal(frame.Payload, tt.wantPayload) {
-				t.Errorf("payload = %q, want %q", frame.Payload, tt.wantPayload)
-			}
-			if consumed != len(tt.data) {
-				t.Errorf("consumed = %d, want %d", consumed, len(tt.data))
-			}
-			if !bytes.Equal(tt.data, original) {
-				t.Errorf("input buffer was mutated: got %v, want %v", tt.data, original)
-			}
+			runParserTest(t, tt.data, tt.wantOpcode, tt.wantPayload, tt.wantErr)
 		})
+	}
+}
+
+func runParserTest(t *testing.T, data []byte, wantOpcode byte, wantPayload []byte, wantErr bool) {
+	t.Parallel()
+	original := append([]byte(nil), data...)
+
+	frame, consumed, err := parseWebSocketFrame(data)
+	if wantErr {
+		if err == nil {
+			t.Fatalf("expected error, got frame %+v", frame)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if frame.Opcode != wantOpcode {
+		t.Errorf("opcode = %#x, want %#x", frame.Opcode, wantOpcode)
+	}
+	if !bytes.Equal(frame.Payload, wantPayload) {
+		t.Errorf("payload = %q, want %q", frame.Payload, wantPayload)
+	}
+	if consumed != len(data) {
+		t.Errorf("consumed = %d, want %d", consumed, len(data))
+	}
+	if !bytes.Equal(data, original) {
+		t.Errorf("input buffer was mutated: got %v, want %v", data, original)
 	}
 }
 
