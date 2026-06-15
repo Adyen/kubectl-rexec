@@ -90,6 +90,34 @@ func TestTCPLoggerWriteSkipsNonBinaryOpcode(t *testing.T) {
 	}
 }
 
+func TestTCPLoggerWriteAuditsCoalescedFrames(t *testing.T) {
+	oldChan := asyncAuditChan
+	t.Cleanup(func() { asyncAuditChan = oldChan })
+
+	asyncAuditChan = make(chan asyncAudit, 4)
+	logger := &TCPLogger{Conn: &stubConn{}, ctxid: "s1"}
+
+	key := [4]byte{0x01, 0x02, 0x03, 0x04}
+	first := buildFrame(0x2, []byte("echo"), true, key)
+	second := buildFrame(0x2, []byte("date"), true, key)
+
+	if _, err := logger.Write(append(append([]byte(nil), first...), second...)); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"echo", "date"}
+	for _, w := range want {
+		select {
+		case got := <-asyncAuditChan:
+			if string(got.ascii) != w {
+				t.Fatalf("audit payload = %q, want %q", got.ascii, w)
+			}
+		default:
+			t.Fatalf("expected coalesced frame %q to be enqueued", w)
+		}
+	}
+}
+
 func TestTCPLoggerWriteStillForwardsOnParseError(t *testing.T) {
 	oldChan := asyncAuditChan
 	t.Cleanup(func() { asyncAuditChan = oldChan })
