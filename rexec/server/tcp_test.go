@@ -35,7 +35,7 @@ func TestAPIServerTransportsDiffer(t *testing.T) {
 		t.Fatal("non-TTY transport must not set DialTLSContext")
 	}
 
-	audited := auditedAPIServerTransport("sess")
+	audited := auditedAPIServerTransport("sess", sessionInfo{})
 	if audited.DialTLSContext == nil {
 		t.Fatal("TTY transport must set DialTLSContext")
 	}
@@ -95,7 +95,14 @@ func TestTCPLoggerWriteAuditsCoalescedFrames(t *testing.T) {
 	t.Cleanup(func() { asyncAuditChan = oldChan })
 
 	asyncAuditChan = make(chan asyncAudit, 4)
-	logger := &TCPLogger{Conn: &stubConn{}, ctxid: "s1"}
+	wantInfo := sessionInfo{
+		User:      "alice",
+		NameSpace: "default",
+		Pod:       "shell",
+		Container: "app",
+		ClientIP:  "192.0.2.1",
+	}
+	logger := &TCPLogger{Conn: &stubConn{}, ctxid: "s1", info: wantInfo}
 
 	key := [4]byte{0x01, 0x02, 0x03, 0x04}
 	first := buildFrame(0x2, []byte("echo"), true, key)
@@ -109,6 +116,9 @@ func TestTCPLoggerWriteAuditsCoalescedFrames(t *testing.T) {
 	for _, w := range want {
 		select {
 		case got := <-asyncAuditChan:
+			if got.info != wantInfo {
+				t.Fatalf("audit session info = %+v, want %+v", got.info, wantInfo)
+			}
 			if string(got.ascii) != w {
 				t.Fatalf("audit payload = %q, want %q", got.ascii, w)
 			}
@@ -145,7 +155,7 @@ func TestAuditedDialTLSContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	tr := auditedAPIServerTransport("sess")
+	tr := auditedAPIServerTransport("sess", sessionInfo{})
 	_, err := tr.DialTLSContext(ctx, "tcp", "unused")
 	if err == nil {
 		t.Fatal("expected error when context is already cancelled")
