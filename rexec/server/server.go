@@ -139,11 +139,11 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 
 	// tty exec audit keystrokes on tls conn see tcplogger
 	ctxid := uuid.New().String()
-	registerSession(ctxid, user, namespace, pod, container, clientIP)
+	info := registerSession(ctxid, user, namespace, pod, container, clientIP)
 	defer endSession(ctxid)
 
 	logCommand(cmd, user, ctxid, namespace, pod, container, clientIP)
-	proxy.Transport = auditedAPIServerTransport(ctxid)
+	proxy.Transport = auditedAPIServerTransport(ctxid, info)
 	proxy.ServeHTTP(w, r)
 }
 

@@ -34,15 +34,15 @@ func apiServerTransport() *http.Transport {
 }
 
 // tty exec uses tls conn wrapped in tcplogger so we can audit keystrokes
-func auditedAPIServerTransport(sessionID string) *http.Transport {
+func auditedAPIServerTransport(sessionID string, info sessionInfo) *http.Transport {
 	tr := baseAPIServerTransport()
 	tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return dialAuditedConn(ctx, sessionID)
+		return dialAuditedConn(ctx, sessionID, info)
 	}
 	return tr
 }
 
-func dialAuditedConn(ctx context.Context, sessionID string) (net.Conn, error) {
+func dialAuditedConn(ctx context.Context, sessionID string, info sessionInfo) (net.Conn, error) {
 	raw, err := (&net.Dialer{}).DialContext(ctx, "tcp", apiServerDial)
 	if err != nil {
 		return nil, err
@@ -52,16 +52,18 @@ func dialAuditedConn(ctx context.Context, sessionID string) (net.Conn, error) {
 		raw.Close()
 		return nil, err
 	}
-	return &TCPLogger{Conn: tlsConn, ctxid: sessionID}, nil
+	return &TCPLogger{Conn: tlsConn, ctxid: sessionID, info: info}, nil
 }
 
-func registerSession(ctxid, user, namespace, pod, container, clientIP string) {
-	mapSync.Lock()
-	sessionMap[ctxid] = sessionInfo{
+func registerSession(ctxid, user, namespace, pod, container, clientIP string) sessionInfo {
+	info := sessionInfo{
 		User: user, NameSpace: namespace, Pod: pod, Container: container, ClientIP: clientIP,
 	}
+	mapSync.Lock()
+	sessionMap[ctxid] = info
 	mapSync.Unlock()
 	logSessionEvent("session_start", user, ctxid, namespace, pod, container, clientIP)
+	return info
 }
 
 func endSession(ctxid string) {
@@ -84,6 +86,7 @@ func endSession(ctxid string) {
 type TCPLogger struct {
 	net.Conn
 	ctxid string
+	info  sessionInfo
 }
 
 func (t *TCPLogger) Write(b []byte) (n int, err error) {
@@ -116,27 +119,23 @@ func (t *TCPLogger) auditClientFrame(frameBytes []byte) {
 		if auditLogger.GetLevel() == zerolog.TraceLevel {
 			t.logTraceStroke(parsed.Payload)
 		}
-		asyncAuditChan <- asyncAudit{ctxid: t.ctxid, ascii: parsed.Payload}
+		asyncAuditChan <- asyncAudit{ctxid: t.ctxid, info: t.info, ascii: parsed.Payload}
 	}
 }
 
 func (t *TCPLogger) logTraceStroke(payload []byte) {
-	info, ok := sessionMap[t.ctxid]
-	if !ok {
-		return
-	}
 	stroke, err := hex.DecodeString(fmt.Sprintf("%x", payload))
 	if err != nil {
 		SysLogger.Error().Err(err).Msg("failed to parse payload")
 		return
 	}
 	auditLogger.Trace().
-		Str("user", info.User).
+		Str("user", t.info.User).
 		Str("session", t.ctxid).
-		Str("namespace", info.NameSpace).
-		Str("pod", info.Pod).
-		Str("container", info.Container).
-		Str("client_ip", info.ClientIP).
+		Str("namespace", t.info.NameSpace).
+		Str("pod", t.info.Pod).
+		Str("container", t.info.Container).
+		Str("client_ip", t.info.ClientIP).
 		// tty payload has nul bytes strip for trace log
 		Str("stroke", strings.ReplaceAll(string(stroke), "\u0000", "")).
 		Msg("")
