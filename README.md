@@ -6,8 +6,8 @@ Kubectl exec does not provide any kind of audit what is actually done inside the
 ## Contributing
 We strongly encourage you to contribute to our repository. Find out more in our [contribution guidelines](https://github.com/Adyen/.github/blob/main/CONTRIBUTING.md)
 
-## Requirements
-In kubernetes 1.30 `TranslateStreamCloseWebsocketRequests` featuregate is true by the default making protocol between kubectl and kube-apiserver is websocket while prior is SPDY, this solution handles only websockets so the k8s cluster either has to be 1.30 or 1.29 with `TranslateStreamCloseWebsocketRequests=true` feature flag. Version below 1.29 are not supported.
+## Compatibility
+TTY session auditing supports both **WebSocket** and **SPDY** exec streaming protocols. WebSocket is the default on Kubernetes 1.30+ (`TranslateStreamCloseWebsocketRequests` feature gate). On older clusters where kubectl still uses SPDY (for example Kubernetes 1.29 without that feature gate enabled), rexec audits keystrokes from SPDY stdin streams as well.
 
 ## Installation
 See the [Getting started](https://github.com/Adyen/kubectl-rexec/blob/main/STARTED.md) guide.

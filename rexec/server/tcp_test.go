@@ -1,46 +1,19 @@
 package server
 
 import (
-	"context"
-	"errors"
-	"io"
-	"net"
+	"strings"
 	"testing"
-	"time"
+
+	"github.com/rs/zerolog"
 )
 
-// fake network connection
-type stubConn struct {
-	written [][]byte
-}
-
-func (s *stubConn) Read([]byte) (int, error) { return 0, io.EOF }
-func (s *stubConn) Write(p []byte) (int, error) {
-	s.written = append(s.written, append([]byte(nil), p...))
-	return len(p), nil
-}
-func (s *stubConn) Close() error                     { return nil }
-func (s *stubConn) LocalAddr() net.Addr              { return nil }
-func (s *stubConn) RemoteAddr() net.Addr             { return nil }
-func (s *stubConn) SetDeadline(time.Time) error      { return nil }
-func (s *stubConn) SetReadDeadline(time.Time) error  { return nil }
-func (s *stubConn) SetWriteDeadline(time.Time) error { return nil }
-
-func TestAPIServerTransportsDiffer(t *testing.T) {
-	plain := apiServerTransport()
-	if plain.TLSClientConfig == nil {
-		t.Fatal("non-TTY transport must use TLSClientConfig")
+func TestAPIServerTransport(t *testing.T) {
+	tr := apiServerTransport()
+	if tr.TLSClientConfig == nil {
+		t.Fatal("apiserver transport must use TLSClientConfig")
 	}
-	if plain.DialTLSContext != nil {
-		t.Fatal("non-TTY transport must not set DialTLSContext")
-	}
-
-	audited := auditedAPIServerTransport("sess", sessionInfo{})
-	if audited.DialTLSContext == nil {
-		t.Fatal("TTY transport must set DialTLSContext")
-	}
-	if audited.TLSClientConfig != nil {
-		t.Fatal("TTY transport must not use TLSClientConfig (TLS is done in DialTLSContext)")
+	if tr.DialTLSContext != nil {
+		t.Fatal("apiserver transport must not set DialTLSContext")
 	}
 }
 
@@ -70,97 +43,90 @@ func TestEndSessionIdempotent(t *testing.T) {
 	}
 }
 
-func TestTCPLoggerWriteSkipsNonBinaryOpcode(t *testing.T) {
+func TestEndSessionFlushesPendingCommand(t *testing.T) {
+	oldSessionMap := sessionMap
+	oldCommandMap := commandMap
+	oldAuditLogger := auditLogger
+	t.Cleanup(func() {
+		sessionMap = oldSessionMap
+		commandMap = oldCommandMap
+		auditLogger = oldAuditLogger
+	})
+
+	sessionMap = map[string]sessionInfo{}
+	commandMap = map[string][]byte{}
+
+	var buf strings.Builder
+	auditLogger = zerolog.New(&buf)
+
+	id := "flush-me"
+	info := sessionInfo{User: "bob", NameSpace: "ns", Pod: "p", Container: "c", ClientIP: "1.2.3.4"}
+	sessionMap[id] = info
+	commandMap[id] = []byte("ls")
+
+	endSession(id)
+
+	if !strings.Contains(buf.String(), `"command":"ls"`) {
+		t.Fatalf("expected flushed command in audit log, got %s", buf.String())
+	}
+}
+
+func TestAuditedStdinEnqueuesReads(t *testing.T) {
 	oldChan := asyncAuditChan
 	t.Cleanup(func() { asyncAuditChan = oldChan })
-
 	asyncAuditChan = make(chan asyncAudit, 1)
-	logger := &TCPLogger{Conn: &stubConn{}, ctxid: "s1"}
 
-	// FIN + text opcode 0x1, unmasked, empty payload
-	_, err := logger.Write([]byte{0x81, 0x00})
-	if err != nil {
+	info := sessionInfo{User: "alice", NameSpace: "ns", Pod: "p"}
+	r := newAuditedStdin(strings.NewReader("ls"), "sess", info)
+	buf := make([]byte, 8)
+	if _, err := r.Read(buf); err != nil {
 		t.Fatal(err)
 	}
 
 	select {
-	case <-asyncAuditChan:
-		t.Fatal("text frame must not enqueue async audit")
-	default:
-	}
-}
-
-func TestTCPLoggerWriteAuditsCoalescedFrames(t *testing.T) {
-	oldChan := asyncAuditChan
-	t.Cleanup(func() { asyncAuditChan = oldChan })
-
-	asyncAuditChan = make(chan asyncAudit, 4)
-	wantInfo := sessionInfo{
-		User:      "alice",
-		NameSpace: "default",
-		Pod:       "shell",
-		Container: "app",
-		ClientIP:  "192.0.2.1",
-	}
-	logger := &TCPLogger{Conn: &stubConn{}, ctxid: "s1", info: wantInfo}
-
-	key := [4]byte{0x01, 0x02, 0x03, 0x04}
-	first := buildFrame(0x2, []byte("echo"), true, key)
-	second := buildFrame(0x2, []byte("date"), true, key)
-
-	if _, err := logger.Write(append(append([]byte(nil), first...), second...)); err != nil {
-		t.Fatal(err)
-	}
-
-	want := []string{"echo", "date"}
-	for _, w := range want {
-		select {
-		case got := <-asyncAuditChan:
-			if got.info != wantInfo {
-				t.Fatalf("audit session info = %+v, want %+v", got.info, wantInfo)
-			}
-			if string(got.ascii) != w {
-				t.Fatalf("audit payload = %q, want %q", got.ascii, w)
-			}
-		default:
-			t.Fatalf("expected coalesced frame %q to be enqueued", w)
+	case got := <-asyncAuditChan:
+		if string(got.ascii) != "ls" {
+			t.Fatalf("audit payload = %q, want ls", got.ascii)
 		}
-	}
-}
-
-func TestTCPLoggerWriteStillForwardsOnParseError(t *testing.T) {
-	oldChan := asyncAuditChan
-	t.Cleanup(func() { asyncAuditChan = oldChan })
-
-	asyncAuditChan = make(chan asyncAudit, 1)
-	conn := &stubConn{}
-	logger := &TCPLogger{Conn: conn, ctxid: "s1"}
-
-	n, err := logger.Write([]byte{0x00})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 || len(conn.written) != 1 {
-		t.Fatalf("expected 1 byte forwarded, n=%d writes=%d", n, len(conn.written))
-	}
-
-	select {
-	case <-asyncAuditChan:
-		t.Fatal("invalid frame must not enqueue audit")
 	default:
+		t.Fatal("expected stdin read to be audited")
 	}
 }
 
-func TestAuditedDialTLSContextCancelled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+func TestStoreOrFlushIgnoresControlChars(t *testing.T) {
+	oldCommandMap := commandMap
+	t.Cleanup(func() { commandMap = oldCommandMap })
 
-	tr := auditedAPIServerTransport("sess", sessionInfo{})
-	_, err := tr.DialTLSContext(ctx, "tcp", "unused")
-	if err == nil {
-		t.Fatal("expected error when context is already cancelled")
+	commandMap = map[string][]byte{}
+	info := sessionInfo{User: "alice", NameSpace: "ns", Pod: "p"}
+
+	storeOrFlush(asyncAudit{ctxid: "s", info: info, ascii: []byte("ls")})
+	storeOrFlush(asyncAudit{ctxid: "s", info: info, ascii: []byte{3, 4}})
+
+	if len(commandMap["s"]) != 0 {
+		t.Fatalf("expected buffer cleared after Ctrl+C/D, got %q", commandMap["s"])
 	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
+}
+
+func TestStoreOrFlushTraceKeystrokes(t *testing.T) {
+	oldCommandMap := commandMap
+	oldAuditLogger := auditLogger
+	oldTrace := AuditFullTraceLog
+	t.Cleanup(func() {
+		commandMap = oldCommandMap
+		auditLogger = oldAuditLogger
+		AuditFullTraceLog = oldTrace
+	})
+
+	commandMap = map[string][]byte{}
+	AuditFullTraceLog = true
+	var buf strings.Builder
+	auditLogger = zerolog.New(&buf).With().Timestamp().Str("facility", "audit").Logger().Level(zerolog.TraceLevel)
+
+	info := sessionInfo{User: "alice", NameSpace: "ns", Pod: "p"}
+	storeOrFlush(asyncAudit{ctxid: "s", info: info, ascii: []byte("a")})
+
+	if !strings.Contains(buf.String(), `"event":"keystroke"`) || !strings.Contains(buf.String(), `"byte":97`) {
+		t.Fatalf("expected trace keystroke log, got %s", buf.String())
 	}
 }

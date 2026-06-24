@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 
@@ -15,6 +16,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	klog "k8s.io/klog/v2"
+	"k8s.io/klog/v2/textlogger"
 )
 
 const (
@@ -64,6 +67,8 @@ var SecretSauce string
 var ByPassedUsers []string
 var MaxStokesPerLine int
 var tokenSync sync.Mutex
+
+var ingressDiscardLog = textlogger.NewLogger(textlogger.NewConfig(textlogger.Output(io.Discard)))
 
 func Init() {
 	auditLevel := zerolog.InfoLevel
@@ -122,6 +127,14 @@ func Init() {
 	}
 
 	go asyncAuditor()
+}
+
+// ingressLogContext silences klog/logr noise from k8s.io/streaming on websocket disconnect
+func ingressLogContext(ctx context.Context) context.Context {
+	if SysDebugLog {
+		return ctx
+	}
+	return klog.NewContext(ctx, ingressDiscardLog)
 }
 
 func parseToken() (jwt.MapClaims, error) {
@@ -190,6 +203,25 @@ func logCommand(command, user, ctxid, namespace, pod, container, clientIP string
 
 func logSessionEvent(event, user, ctxid, namespace, pod, container, clientIP string) {
 	auditLogger.Info().Str("event", event).Str("user", user).Str("session", ctxid).Str("namespace", namespace).Str("pod", pod).Str("container", container).Str("client_ip", clientIP).Msg("")
+}
+
+func logIngress(protocol string) {
+	auditLogger.Info().Str("event", "ingress").Str("protocol", protocol).Msg("")
+}
+
+func logEgress(protocol string) {
+	auditLogger.Info().Str("event", "egress").Str("protocol", protocol).Msg("")
+}
+
+func logKeystroke(b byte, user, ctxid, namespace, pod, container, clientIP string) {
+	auditLogger.Trace().
+		Str("event", "keystroke").
+		Str("user", user).Str("session", ctxid).
+		Str("namespace", namespace).Str("pod", pod).Str("container", container).
+		Str("client_ip", clientIP).
+		Int("byte", int(b)).
+		Bytes("ascii", []byte{b}).
+		Msg("")
 }
 
 var httpSpec = `

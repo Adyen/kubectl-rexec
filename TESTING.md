@@ -47,3 +47,9 @@ go test -v -run TestParseFileSpec
 | `TestCanPassNoMatch` | Denial when no auth matches |
 | `TestWaitForListenerReady` | Listener readiness check |
 | `TestRexecHandlerMissingUser` | Missing user header returns 403 |
+| `TestIngressReady` | Mandatory SPDY/WebSocket ingress streams before bridge |
+| `TestMapSPDYStream` | Maps SPDY stream headers to stdin/stdout/stderr/error |
+| `TestIsExecStreamRequest` | Detects POST and upgrade GET exec stream requests |
+| `TestAuditedStdinEnqueuesReads` | TTY stdin reads are sent to the async auditor |
+| `TestStoreOrFlushIgnoresControlChars` | Ctrl+C/D clears buffered keystrokes |
+| `TestStoreOrFlushTraceKeystrokes` | `--audit-trace` logs per-byte keystroke events |
