@@ -128,23 +128,41 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	apiServerURL, _ := url.Parse("https://" + apiServerDial)
 	proxy := httputil.NewSingleHostReverseProxy(apiServerURL)
 	proxy.FlushInterval = -1
+	proxy.Transport = apiServerTransport()
 	cmd := strings.Join(initialCommand, " ")
 
 	if !needsRecording {
-		proxy.Transport = apiServerTransport()
-		logCommand(cmd, user, "oneoff", namespace, pod, container, clientIP)
+		if cmd != "" {
+			logCommand(cmd, user, "oneoff", namespace, pod, container, clientIP)
+		}
 		proxy.ServeHTTP(w, r)
 		return
 	}
 
-	// tty exec audit keystrokes on tls conn see tcplogger
+	// non-upgrade GET probes are proxied. the exec stream is GET+upgrade on 1.30+
+	if !isExecStreamRequest(r) {
+		proxy.ServeHTTP(w, r)
+		return
+	}
+
 	ctxid := uuid.New().String()
 	info := registerSession(ctxid, user, namespace, pod, container, clientIP)
 	defer endSession(ctxid)
-
 	logCommand(cmd, user, ctxid, namespace, pod, container, clientIP)
-	proxy.Transport = auditedAPIServerTransport(ctxid, info)
-	proxy.ServeHTTP(w, r)
+
+	if err := bridgeTTYExec(w, r, bridgeParams{
+		namespace: namespace,
+		pod:       pod,
+		container: container,
+		command:   initialCommand,
+		user:      user,
+		groups:    groups,
+		tty:       true,
+		sessionID: ctxid,
+		info:      info,
+	}); err != nil {
+		SysLogger.Error().Err(err).Msg("tty exec bridge failed")
+	}
 }
 
 func ensureValidToken() error {
