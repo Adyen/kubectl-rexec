@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 )
 
 type mockHijacker struct {
@@ -287,4 +288,57 @@ func TestBuildMetricsServerTimeouts(t *testing.T) {
 	if srv.IdleTimeout != 60*time.Second {
 		t.Fatalf("IdleTimeout = %s, want %s", srv.IdleTimeout, 60*time.Second)
 	}
+}
+
+func TestRecordSessionSuccess(t *testing.T) {
+	totalBefore := testutil.ToFloat64(sessionsTotal)
+	failedBefore := testutil.ToFloat64(sessionsFailedTotal)
+
+	recordSession(http.StatusOK)
+
+	if got := testutil.ToFloat64(sessionsTotal) - totalBefore; got != 1 {
+		t.Fatalf("sessions total delta = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(sessionsFailedTotal) - failedBefore; got != 0 {
+		t.Fatalf("sessions failed delta = %v, want 0", got)
+	}
+}
+
+func TestRecordSessionFailure(t *testing.T) {
+	totalBefore := testutil.ToFloat64(sessionsTotal)
+	failedBefore := testutil.ToFloat64(sessionsFailedTotal)
+
+	recordSession(http.StatusBadGateway)
+
+	if got := testutil.ToFloat64(sessionsTotal) - totalBefore; got != 1 {
+		t.Fatalf("sessions total delta = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(sessionsFailedTotal) - failedBefore; got != 1 {
+		t.Fatalf("sessions failed delta = %v, want 1", got)
+	}
+}
+
+func TestRecordSessionStartObservesLatency(t *testing.T) {
+	before := histogramSampleCount(t, sessionStartDuration)
+
+	recordSessionStart(42 * time.Millisecond)
+
+	after := histogramSampleCount(t, sessionStartDuration)
+	if got := after - before; got != 1 {
+		t.Fatalf("histogram sample delta = %d, want 1", got)
+	}
+}
+
+func histogramSampleCount(t *testing.T, h interface{ Write(*dto.Metric) error }) uint64 {
+	t.Helper()
+
+	var m dto.Metric
+	if err := h.Write(&m); err != nil {
+		t.Fatalf("failed to read histogram metric: %v", err)
+	}
+	hist := m.GetHistogram()
+	if hist == nil {
+		t.Fatal("expected histogram metric")
+	}
+	return hist.GetSampleCount()
 }

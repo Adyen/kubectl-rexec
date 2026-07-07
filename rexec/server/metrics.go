@@ -67,6 +67,28 @@ var auditKeystrokesTotal = prometheus.NewCounter(
 	},
 )
 
+var sessionsTotal = prometheus.NewCounter(
+	prometheus.CounterOpts{
+		Name: "rexec_sessions_total",
+		Help: "Total number of rexec sessions.",
+	},
+)
+
+var sessionsFailedTotal = prometheus.NewCounter(
+	prometheus.CounterOpts{
+		Name: "rexec_sessions_failed_total",
+		Help: "Total number of failed rexec sessions.",
+	},
+)
+
+var sessionStartDuration = prometheus.NewHistogram(
+	prometheus.HistogramOpts{
+		Name:    "rexec_session_start_duration_seconds",
+		Help:    "Time in seconds until rexec receives an upstream response and starts the session.",
+		Buckets: prometheus.DefBuckets,
+	},
+)
+
 func init() {
 	prometheus.MustRegister(
 		requestsTotal,
@@ -76,6 +98,9 @@ func init() {
 		errorsTotal,
 		auditCommandsTotal,
 		auditKeystrokesTotal,
+		sessionsTotal,
+		sessionsFailedTotal,
+		sessionStartDuration,
 	)
 }
 
@@ -127,6 +152,17 @@ func instrumentHandler(handlerName string, next http.HandlerFunc) http.HandlerFu
 
 func recordError(component string) {
 	errorsTotal.WithLabelValues(component).Inc()
+}
+
+func recordSession(statusCode int) {
+	sessionsTotal.Inc()
+	if statusCode >= http.StatusBadRequest {
+		sessionsFailedTotal.Inc()
+	}
+}
+
+func recordSessionStart(d time.Duration) {
+	sessionStartDuration.Observe(d.Seconds())
 }
 
 func MetricsHandler() http.Handler {

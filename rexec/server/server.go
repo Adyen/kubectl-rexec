@@ -57,6 +57,19 @@ func Server() {
 // rexecHandler is responsible for rewrite the request to an exec request
 // and proxy it back to k8s api
 func rexecHandler(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() {
+		statusCode := http.StatusInternalServerError
+		if rec, ok := w.(*statusRecorder); ok {
+			if rec.status == 0 {
+				statusCode = http.StatusOK
+			} else {
+				statusCode = rec.status
+			}
+		}
+		recordSession(statusCode)
+	}()
+
 	// reject anything that is not authenticated as the kube-apiserver
 	// aggregation layer. without this check a caller able to reach the backend
 	// directly could supply arbitrary X-Remote-User / X-Remote-Group headers and
@@ -131,6 +144,10 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	apiServerURL, _ := url.Parse("https://" + apiServerDial)
 	proxy := httputil.NewSingleHostReverseProxy(apiServerURL)
 	proxy.FlushInterval = -1
+	proxy.ModifyResponse = func(*http.Response) error {
+		recordSessionStart(time.Since(start))
+		return nil
+	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
 		recordError("proxy")
 		SysLogger.Error().Err(err).Msg("reverse proxy error")
