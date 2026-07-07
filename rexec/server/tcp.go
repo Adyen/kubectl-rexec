@@ -45,10 +45,12 @@ func auditedAPIServerTransport(sessionID string, info sessionInfo) *http.Transpo
 func dialAuditedConn(ctx context.Context, sessionID string, info sessionInfo) (net.Conn, error) {
 	raw, err := (&net.Dialer{}).DialContext(ctx, "tcp", apiServerDial)
 	if err != nil {
+		recordError("upstream_connect")
 		return nil, err
 	}
 	tlsConn := tls.Client(raw, apiServerTLSConfig())
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		recordError("upstream_connect")
 		raw.Close()
 		return nil, err
 	}
@@ -98,12 +100,13 @@ func (t *TCPLogger) Write(b []byte) (n int, err error) {
 }
 
 func (t *TCPLogger) auditClientFrame(frameBytes []byte) {
-    // a single write operation may contain multiple combined frames. Continue
-    // parsing until the entire buffer has been processed to ensure no keystrokes
-    // are omitted from the audit log.
+	// a single write operation may contain multiple combined frames. Continue
+	// parsing until the entire buffer has been processed to ensure no keystrokes
+	// are omitted from the audit log.
 	for len(frameBytes) > 0 {
 		parsed, consumed, err := parseWebSocketFrame(frameBytes)
 		if err != nil {
+			recordError("ws_parse")
 			SysLogger.Error().Err(err).Msg("failed to parse ws frame")
 			return
 		}
