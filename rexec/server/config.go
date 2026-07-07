@@ -63,6 +63,7 @@ var commandSync sync.Mutex
 var SecretSauce string
 var ByPassedUsers []string
 var MaxStokesPerLine int
+var MetricsPort int
 var tokenSync sync.Mutex
 
 func Init() {
@@ -185,6 +186,7 @@ func loadFrontProxyConfig() error {
 }
 
 func logCommand(command, user, ctxid, namespace, pod, container, clientIP string) {
+	auditCommandsTotal.Inc()
 	auditLogger.Info().Str("user", user).Str("session", ctxid).Str("namespace", namespace).Str("pod", pod).Str("container", container).Str("client_ip", clientIP).Str("command", command).Msg("")
 }
 

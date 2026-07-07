@@ -11,6 +11,7 @@ func main() {
 		Use: "rexec-server",
 		Run: func(cmd *cobra.Command, args []string) {
 			server.Init()
+			go server.StartMetricsServer()
 			server.Server()
 		},
 	}
@@ -19,6 +20,7 @@ func main() {
 	cmd.Flags().StringArrayVar(&server.ByPassedUsers, "by-pass-user", []string{}, "allow user to bypass webhook restriction")
 	cmd.Flags().StringVar(&server.SecretSauce, "by-pass-shared-key", "", "shared key between apiservice and validatingwebhook")
 	cmd.Flags().IntVar(&server.MaxStokesPerLine, "max-strokes-per-line", 0, "set how much keystores can be held in the async audit before flush")
+	cmd.Flags().IntVar(&server.MetricsPort, "metrics-port", 9090, "port used to expose prometheus metrics endpoint")
 	cmd.Flags().StringVar(&server.ClusterDomain, "cluster-domain", "", "cluster DNS domain (default: detect or cluster.local)")
 	err := cmd.Execute()
 	if err != nil {

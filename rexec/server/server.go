@@ -22,16 +22,16 @@ func Server() {
 	r := mux.NewRouter()
 
 	// handling rexec request to handler
-	r.HandleFunc("/apis/audit.adyen.internal/v1beta1/namespaces/{namespace}/pods/{pod}/exec", rexecHandler)
+	r.HandleFunc("/apis/audit.adyen.internal/v1beta1/namespaces/{namespace}/pods/{pod}/exec", instrumentHandler("rexec", rexecHandler))
 	// returning some dummy json making kubeapiserver happier
-	r.HandleFunc("/apis/audit.adyen.internal/v1beta1", func(w http.ResponseWriter, r *http.Request) {
+	r.HandleFunc("/apis/audit.adyen.internal/v1beta1", instrumentHandler("discovery", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte(httpSpec)); err != nil {
 			SysLogger.Error().Err(err).Msg("failed to write response")
 		}
-	})
+	}))
 	// handle native pod exec through a validating webhook
-	r.HandleFunc("/validate-exec", execHandler)
+	r.HandleFunc("/validate-exec", instrumentHandler("webhook", execHandler))
 
 	// start tls listener.
 	//
@@ -59,15 +59,29 @@ func Server() {
 // rexecHandler is responsible for rewrite the request to an exec request
 // and proxy it back to k8s api
 func rexecHandler(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() {
+		statusCode := http.StatusInternalServerError
+		if rec, ok := w.(*statusRecorder); ok {
+			if rec.status == 0 {
+				statusCode = http.StatusOK
+			} else {
+				statusCode = rec.status
+			}
+		}
+		recordSession(statusCode)
+	}()
+
 	// reject anything that is not authenticated as the kube-apiserver
 	// aggregation layer. without this check a caller able to reach the backend
 	// directly could supply arbitrary X-Remote-User / X-Remote-Group headers and
 	// have us impersonate any user (including system:masters).
 	if !verifiedFrontProxy(r) {
+		recordError("front_proxy")
 		SysLogger.Error().Str("client_ip", getIP(r)).Msg("rejected exec request: missing or untrusted front-proxy client certificate")
 		w.WriteHeader(http.StatusUnauthorized)
 		if _, err := w.Write([]byte(httpForbidden)); err != nil {
-			SysLogger.Error().Err(err).Msg("failed to write unauthorized response")
+			SysLogger.Error().Err(err).Msg("failed to write forbidden response")
 		}
 		return
 	}
@@ -91,6 +105,7 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	// we check if the initially loaded jwt is still valid, if not we refresh it
 	err := ensureValidToken()
 	if err != nil {
+		recordError("token")
 		SysLogger.Error().Err(err).Msg("failed to check the service account token")
 		w.WriteHeader(http.StatusInternalServerError)
 		if _, err := w.Write([]byte(httpInternalError)); err != nil {
@@ -125,6 +140,7 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 
 	params, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
+		recordError("request_parse")
 		w.WriteHeader(http.StatusInternalServerError)
 		if _, err := w.Write([]byte(httpInternalError)); err != nil {
 			SysLogger.Error().Err(err).Msg("failed to write internal error response")
@@ -138,9 +154,20 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	apiServerURL, _ := url.Parse("https://" + apiServerDial)
 	proxy := httputil.NewSingleHostReverseProxy(apiServerURL)
 	proxy.FlushInterval = -1
+	proxy.ModifyResponse = func(*http.Response) error {
+		recordSessionStart(time.Since(start))
+		return nil
+	}
+	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
+		recordError("proxy")
+		SysLogger.Error().Err(err).Msg("reverse proxy error")
+		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
+	}
 	cmd := strings.Join(initialCommand, " ")
 
 	if !needsRecording {
+		activeSessions.WithLabelValues("oneoff").Inc()
+		defer activeSessions.WithLabelValues("oneoff").Dec()
 		proxy.Transport = apiServerTransport()
 		logCommand(cmd, user, "oneoff", namespace, pod, container, clientIP)
 		proxy.ServeHTTP(w, r)
@@ -148,6 +175,8 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// tty exec audit keystrokes on tls conn see tcplogger
+	activeSessions.WithLabelValues("recording").Inc()
+	defer activeSessions.WithLabelValues("recording").Dec()
 	ctxid := uuid.New().String()
 	info := registerSession(ctxid, user, namespace, pod, container, clientIP)
 	defer endSession(ctxid)
@@ -218,6 +247,11 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 
 	if admissionReview.Request.Kind.Kind == "PodExecOptions" {
 		response.Allowed = canPass
+		if canPass {
+			webhookDecisionsTotal.WithLabelValues("allowed").Inc()
+		} else {
+			webhookDecisionsTotal.WithLabelValues("denied").Inc()
+		}
 		if !canPass {
 			response.Result = &metav1.Status{
 				Message: "cannot use exec directly, use rexec plugin instead",
