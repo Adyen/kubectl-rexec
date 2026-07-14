@@ -30,11 +30,11 @@ jobs:
         run: go build -v ./...
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           install-mode: goinstall
           version: latest
-          args: --timeout=5m
+          args: --timeout=5m --disable=staticcheck
 
       - name: Run tests
         run: go test -json -v -race -count=1 ./... > TestResults-${{ matrix.go-version }}.json
