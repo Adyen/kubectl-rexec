@@ -24,10 +24,10 @@ require_command() {
 }
 
 cleanup() {
-  if [ -n "${TMP_PLUGIN_DIR}" ] && [ -d "${TMP_PLUGIN_DIR}" ]; then
+  if [[ -n "${TMP_PLUGIN_DIR}" ]] && [[ -d "${TMP_PLUGIN_DIR}" ]]; then
     rm -rf "${TMP_PLUGIN_DIR}"
   fi
-  if [ "${KEEP_CLUSTER}" != "true" ]; then
+  if [[ "${KEEP_CLUSTER}" != "true" ]]; then
     kind delete cluster --name "${CLUSTER_NAME}" >/dev/null 2>&1 || true
   fi
 }
