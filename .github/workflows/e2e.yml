@@ -35,7 +35,8 @@ jobs:
           set -euo pipefail
           curl -fsSL -o kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
           curl -fsSL -o kind.sha256sum "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64.sha256sum"
-          echo "$(cat kind.sha256sum)  kind" | sha256sum --check
+          expected_sha="$(awk '{print $1}' kind.sha256sum)"
+          echo "${expected_sha}  kind" | sha256sum --check
           install -m 0755 kind "${HOME}/kind"
           echo "${HOME}" >> "${GITHUB_PATH}"
           kind version
