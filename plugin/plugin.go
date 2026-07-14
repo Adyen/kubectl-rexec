@@ -113,7 +113,9 @@ func Rexec() {
 	cmds.AddCommand(newExec)
 	cmds.AddCommand(NewCmdCp(f, kubectlOptions.IOStreams))
 
-	cmds.Execute()
+	if err := cmds.Execute(); err != nil {
+		os.Exit(1)
+	}
 }
 
 type RexecOptoins struct {

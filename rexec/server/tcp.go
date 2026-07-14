@@ -49,7 +49,9 @@ func dialAuditedConn(ctx context.Context, sessionID string, info sessionInfo) (n
 	}
 	tlsConn := tls.Client(raw, apiServerTLSConfig())
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		raw.Close()
+		if closeErr := raw.Close(); closeErr != nil {
+			SysLogger.Error().Err(closeErr).Msg("failed to close raw connection")
+		}
 		return nil, err
 	}
 	return &TCPLogger{Conn: tlsConn, ctxid: sessionID, info: info}, nil
