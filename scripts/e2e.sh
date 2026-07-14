@@ -91,7 +91,7 @@ kubectl --context "${KUBE_CONTEXT}" wait --for=condition=Ready "pod/${POD}" -n "
 
 token="rexec-$(date +%s)-${RANDOM}"
 echo "checking rexec exec..."
-exec_output="$(kubectl --context "${KUBE_CONTEXT}" rexec exec "${POD}" -n "${NAMESPACE}" -- echo "${token}")"
+exec_output="$(kubectl rexec --context "${KUBE_CONTEXT}" exec "${POD}" -n "${NAMESPACE}" -- echo "${token}")"
 if ! grep -q "${token}" <<<"${exec_output}"; then
   echo "error: expected token in rexec exec output" >&2
   exit 1
@@ -102,9 +102,9 @@ wait_for_log_token "${token}"
 
 echo "checking rexec cp download..."
 remote_file="/tmp/rexec-cp-${token}"
-kubectl --context "${KUBE_CONTEXT}" rexec exec "${POD}" -n "${NAMESPACE}" -- sh -c "printf '%s' '${token}' > '${remote_file}'"
+kubectl rexec --context "${KUBE_CONTEXT}" exec "${POD}" -n "${NAMESPACE}" -- sh -c "printf '%s' '${token}' > '${remote_file}'"
 tmp_dir="$(mktemp -d)"
-kubectl --context "${KUBE_CONTEXT}" rexec cp "${POD}:${remote_file}" "${tmp_dir}/" -n "${NAMESPACE}"
+kubectl rexec --context "${KUBE_CONTEXT}" cp "${POD}:${remote_file}" "${tmp_dir}/" -n "${NAMESPACE}"
 if ! grep -q "${token}" "${tmp_dir}/$(basename "${remote_file}")"; then
   echo "error: copied file does not contain expected token" >&2
   rm -rf "${tmp_dir}"
@@ -114,7 +114,7 @@ fi
 echo "checking rexec cp upload rejection..."
 upload_file="${tmp_dir}/upload-${token}"
 printf '%s' "${token}" > "${upload_file}"
-if upload_error="$(kubectl --context "${KUBE_CONTEXT}" rexec cp "${upload_file}" "${POD}:/tmp/upload-${token}" -n "${NAMESPACE}" 2>&1)"; then
+if upload_error="$(kubectl rexec --context "${KUBE_CONTEXT}" cp "${upload_file}" "${POD}:/tmp/upload-${token}" -n "${NAMESPACE}" 2>&1)"; then
   echo "error: upload to pod succeeded unexpectedly" >&2
   rm -rf "${tmp_dir}"
   exit 1
