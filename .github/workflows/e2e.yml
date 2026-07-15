@@ -1,0 +1,84 @@
+name: E2E tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GO_VERSION: "1.26.5"
+      KIND_VERSION: "v0.31.0"
+      KIND_NODE_IMAGE: "kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f"
+      REXEC_CLUSTER_NAME: "rexec-e2e"
+      REXEC_NODE_IMAGE: "kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install kind
+        run: |
+          set -euo pipefail
+          curl -fsSL -o kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          curl -fsSL -o kind.sha256sum "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64.sha256sum"
+          expected_sha="$(awk '{print $1}' kind.sha256sum)"
+          echo "${expected_sha}  kind" | sha256sum --check
+          install -m 0755 kind "${HOME}/kind"
+          echo "${HOME}" >> "${GITHUB_PATH}"
+          kind version
+
+      - name: Ensure kubectl is installed
+        run: |
+          set -euo pipefail
+          if command -v kubectl >/dev/null 2>&1; then
+            kubectl version --client
+            exit 0
+          fi
+          curl -fsSL -o kubectl "https://dl.k8s.io/release/v1.35.0/bin/linux/amd64/kubectl"
+          curl -fsSL -o kubectl.sha256 "https://dl.k8s.io/release/v1.35.0/bin/linux/amd64/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+          install -m 0755 kubectl "${HOME}/kubectl"
+          echo "${HOME}" >> "${GITHUB_PATH}"
+          kubectl version --client
+
+      - name: Run e2e smoke checks
+        run: |
+          chmod +x ./scripts/e2e.sh
+          ./scripts/e2e.sh
+
+      - name: Collect diagnostics
+        if: failure()
+        run: |
+          set -euo pipefail
+          mkdir -p e2e-artifacts
+          kubectl --context "kind-${REXEC_CLUSTER_NAME}" get all -A > e2e-artifacts/get-all.txt || true
+          kubectl --context "kind-${REXEC_CLUSTER_NAME}" get events -A --sort-by=.lastTimestamp > e2e-artifacts/events.txt || true
+          kubectl --context "kind-${REXEC_CLUSTER_NAME}" describe deployment/rexec -n kube-system > e2e-artifacts/rexec-deploy.txt || true
+          kubectl --context "kind-${REXEC_CLUSTER_NAME}" get apiservice v1beta1.audit.adyen.internal -o yaml > e2e-artifacts/apiservice.yaml || true
+          kubectl --context "kind-${REXEC_CLUSTER_NAME}" logs -n kube-system -l app=rexec --tail=-1 > e2e-artifacts/rexec.log || true
+          kind export logs --name "${REXEC_CLUSTER_NAME}" e2e-artifacts/kind-logs || true
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-diagnostics
+          path: e2e-artifacts
+
+      - name: Cleanup kind cluster
+        if: always()
+        run: kind delete cluster --name "${REXEC_CLUSTER_NAME}" || true
