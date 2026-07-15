@@ -236,8 +236,12 @@ func TestInitMissingCA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tf.WriteString("token-123")
-	tf.Close()
+	if _, err := tf.WriteString("token-123"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tf.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	caPath = "/invalid/ca.crt"
 	tokenPath = tf.Name()
@@ -261,7 +265,9 @@ func TestInitMissingToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cf.Close()
+	if err := cf.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	caPath = cf.Name()
 	tokenPath = "/invalid/token-123"
@@ -285,14 +291,20 @@ func TestInitInvalidSecretSauce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cf.Close()
+	if err := cf.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	tf, err := os.CreateTemp(dir, "token")
 	if err != nil {
 		t.Fatal(err)
 	}
-	tf.WriteString("token-123")
-	tf.Close()
+	if _, err := tf.WriteString("token-123"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tf.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	caPath = cf.Name()
 	tokenPath = tf.Name()

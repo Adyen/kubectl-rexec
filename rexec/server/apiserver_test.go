@@ -50,9 +50,15 @@ func TestInitAPIServerDefaultDomain(t *testing.T) {
 	})
 
 	ClusterDomain = ""
-	os.Unsetenv("CLUSTER_DOMAIN")
-	os.Unsetenv("KUBERNETES_SERVICE_HOST")
-	os.Unsetenv("KUBERNETES_SERVICE_PORT")
+	if err := os.Unsetenv("CLUSTER_DOMAIN"); err != nil {
+		t.Fatalf("unset CLUSTER_DOMAIN: %v", err)
+	}
+	if err := os.Unsetenv("KUBERNETES_SERVICE_HOST"); err != nil {
+		t.Fatalf("unset KUBERNETES_SERVICE_HOST: %v", err)
+	}
+	if err := os.Unsetenv("KUBERNETES_SERVICE_PORT"); err != nil {
+		t.Fatalf("unset KUBERNETES_SERVICE_PORT: %v", err)
+	}
 	initAPIServer()
 
 	if apiServerHost != "kubernetes.default.svc.cluster.local" {

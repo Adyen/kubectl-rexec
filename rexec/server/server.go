@@ -26,7 +26,9 @@ func Server() {
 	// returning some dummy json making kubeapiserver happier
 	r.HandleFunc("/apis/audit.adyen.internal/v1beta1", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(httpSpec))
+		if _, err := w.Write([]byte(httpSpec)); err != nil {
+			SysLogger.Error().Err(err).Msg("failed to write response")
+		}
 	})
 	// handle native pod exec through a validating webhook
 	r.HandleFunc("/validate-exec", execHandler)
@@ -64,7 +66,9 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	if !verifiedFrontProxy(r) {
 		SysLogger.Error().Str("client_ip", getIP(r)).Msg("rejected exec request: missing or untrusted front-proxy client certificate")
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(httpForbidden))
+		if _, err := w.Write([]byte(httpForbidden)); err != nil {
+			SysLogger.Error().Err(err).Msg("failed to write unauthorized response")
+		}
 		return
 	}
 
@@ -77,7 +81,9 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	// if any of the minimal parameters are missing we should bail
 	if user == "" || namespace == "" || pod == "" {
 		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(httpForbidden))
+		if _, err := w.Write([]byte(httpForbidden)); err != nil {
+			SysLogger.Error().Err(err).Msg("failed to write forbidden response")
+		}
 		return
 	}
 	r.Header.Add("Kubectl-Command", "kubectl exec")
@@ -87,7 +93,9 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		SysLogger.Error().Err(err).Msg("failed to check the service account token")
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(httpInternalError))
+		if _, err := w.Write([]byte(httpInternalError)); err != nil {
+			SysLogger.Error().Err(err).Msg("failed to write internal error response")
+		}
 		return
 	}
 	// adding the service account token we are using for impersonating
@@ -118,7 +126,9 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	params, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(httpInternalError))
+		if _, err := w.Write([]byte(httpInternalError)); err != nil {
+			SysLogger.Error().Err(err).Msg("failed to write internal error response")
+		}
 		return
 	}
 
@@ -224,7 +234,9 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(respBytes)
+	if _, err := w.Write(respBytes); err != nil {
+		SysLogger.Error().Err(err).Msg("failed to write admission response")
+	}
 }
 
 // canPass checks whether the exec request is allowed
