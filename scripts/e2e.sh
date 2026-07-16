@@ -14,6 +14,8 @@ POD="${REXEC_POD:-test-pod}"
 KEEP_CLUSTER="${REXEC_KEEP_CLUSTER:-false}"
 KUBE_CONTEXT="kind-${CLUSTER_NAME}"
 TMP_PLUGIN_DIR=""
+PF_PID=""
+PF_LOG=""
 
 require_command() {
   local cmd="$1"
@@ -24,6 +26,12 @@ require_command() {
 }
 
 cleanup() {
+  if [[ -n "${PF_PID}" ]]; then
+    kill "${PF_PID}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${PF_LOG}" ]] && [[ -f "${PF_LOG}" ]]; then
+    rm -f "${PF_LOG}"
+  fi
   if [[ -n "${TMP_PLUGIN_DIR}" ]] && [[ -d "${TMP_PLUGIN_DIR}" ]]; then
     rm -rf "${TMP_PLUGIN_DIR}"
   fi
@@ -46,12 +54,39 @@ wait_for_log_token() {
   exit 1
 }
 
+read_audit_commands_total() {
+  curl -sf "http://localhost:9090/metrics" 2>/dev/null | awk '/^rexec_audit_commands_total /{print $2}'
+}
+
+start_metrics_port_forward() {
+  PF_LOG="$(mktemp)"
+  kubectl --context "${KUBE_CONTEXT}" port-forward -n kube-system svc/rexec 9090:9090 >"${PF_LOG}" 2>&1 &
+  PF_PID=$!
+
+  for _ in $(seq 1 15); do
+    if ! kill -0 "${PF_PID}" >/dev/null 2>&1; then
+      echo "error: metrics port-forward exited unexpectedly" >&2
+      cat "${PF_LOG}" >&2 || true
+      exit 1
+    fi
+    if curl -sf "http://localhost:9090/metrics" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "error: metrics endpoint did not become reachable in time" >&2
+  cat "${PF_LOG}" >&2 || true
+  exit 1
+}
+
 echo "validating prerequisites..."
 require_command docker
 require_command kind
 require_command kubectl
 require_command go
 require_command sed
+require_command curl
 
 echo "creating kind cluster..."
 kind delete cluster --name "${CLUSTER_NAME}" >/dev/null 2>&1 || true
@@ -99,6 +134,32 @@ fi
 
 echo "checking audit logs..."
 wait_for_log_token "${token}"
+
+echo "checking metrics endpoint..."
+start_metrics_port_forward
+before_metric="$(read_audit_commands_total)"
+if [[ -z "${before_metric}" ]]; then
+  echo "error: failed to read rexec_audit_commands_total from metrics endpoint" >&2
+  exit 1
+fi
+
+metrics_token="rexec-metrics-$(date +%s)-${RANDOM}"
+kubectl rexec --context "${KUBE_CONTEXT}" exec "${POD}" -n "${NAMESPACE}" -- echo "${metrics_token}" >/dev/null
+
+after_metric="$(read_audit_commands_total)"
+if [[ -z "${after_metric}" ]]; then
+  echo "error: failed to read rexec_audit_commands_total after rexec exec" >&2
+  exit 1
+fi
+if ! awk -v before="${before_metric}" -v after="${after_metric}" 'BEGIN { exit !(after > before) }'; then
+  echo "error: expected rexec_audit_commands_total to increase (before=${before_metric}, after=${after_metric})" >&2
+  exit 1
+fi
+
+kill "${PF_PID}" >/dev/null 2>&1 || true
+PF_PID=""
+rm -f "${PF_LOG}"
+PF_LOG=""
 
 echo "checking rexec cp download..."
 remote_file="/tmp/rexec-cp-${token}"
