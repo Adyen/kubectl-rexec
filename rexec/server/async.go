@@ -16,6 +16,8 @@ func asyncAuditor() {
 // storeOrFlush will push keystrokes into a byte slice and
 // flush it upen enter or a certain limit
 func storeOrFlush(audit asyncAudit) {
+	auditKeystrokesTotal.Add(float64(len(audit.ascii)))
+
 	for _, ascii := range audit.ascii {
 		switch ascii {
 		case 0:

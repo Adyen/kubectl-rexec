@@ -18,6 +18,7 @@ func main() {
 				server.SecretSauce = deprSecretSauce
 			}
 			server.Init()
+			go server.StartMetricsServer()
 			server.Server()
 		},
 	}
@@ -30,6 +31,7 @@ func main() {
 	_ = cmd.Flags().MarkDeprecated("by-pass-user", "use --bypass-user instead")
 	_ = cmd.Flags().MarkDeprecated("by-pass-shared-key", "use --bypass-shared-key instead")
 	cmd.Flags().IntVar(&server.MaxStokesPerLine, "max-strokes-per-line", 0, "set how much keystores can be held in the async audit before flush")
+	cmd.Flags().IntVar(&server.MetricsPort, "metrics-port", 9090, "port used to expose prometheus metrics endpoint")
 	cmd.Flags().StringVar(&server.ClusterDomain, "cluster-domain", "", "cluster DNS domain (default: detect or cluster.local)")
 	err := cmd.Execute()
 	if err != nil {

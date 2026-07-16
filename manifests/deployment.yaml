@@ -15,6 +15,10 @@ spec:
     metadata:
       labels:
         app: rexec
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: /metrics
     spec:
       serviceAccountName: rexec-impersonator
       automountServiceAccountToken: true
@@ -24,6 +28,7 @@ spec:
         name: rexec
         ports:
         - containerPort: 8443
+        - containerPort: 9090
         args:
         - --audit-trace
         - --bypass-user=system:admin
