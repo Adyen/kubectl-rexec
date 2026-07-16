@@ -17,6 +17,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+type rexecRequest struct {
+	namespace string
+	pod       string
+	user      string
+}
+
+type rexecExecParams struct {
+	command       []string
+	needsRecording bool
+	container     string
+	clientIP      string
+}
+
 func Server() {
 	// creating a mux router
 	r := mux.NewRouter()
@@ -60,22 +73,45 @@ func Server() {
 // and proxy it back to k8s api
 func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	defer func() {
-		statusCode := http.StatusInternalServerError
-		if rec, ok := w.(*statusRecorder); ok {
-			if rec.status == 0 {
-				statusCode = http.StatusOK
-			} else {
-				statusCode = rec.status
-			}
-		}
-		recordSession(statusCode)
-	}()
+	defer recordRexecSessionStatus(w)
 
-	// reject anything that is not authenticated as the kube-apiserver
-	// aggregation layer. without this check a caller able to reach the backend
-	// directly could supply arbitrary X-Remote-User / X-Remote-Group headers and
-	// have us impersonate any user (including system:masters).
+	req, ok := validateRexecRequest(w, r)
+	if !ok {
+		return
+	}
+
+	if !prepareRexecProxyRequest(w, r, req) {
+		return
+	}
+
+	execParams, ok := parseRexecExecParams(w, r)
+	if !ok {
+		return
+	}
+
+	proxy := buildRexecProxy(start)
+	cmd := strings.Join(execParams.command, " ")
+	if !execParams.needsRecording {
+		serveOneoffRexecSession(w, r, proxy, req, execParams, cmd)
+		return
+	}
+
+	serveRecordingRexecSession(w, r, proxy, req, execParams, cmd)
+}
+
+func recordRexecSessionStatus(w http.ResponseWriter) {
+	statusCode := http.StatusInternalServerError
+	if rec, ok := w.(*statusRecorder); ok {
+		if rec.status == 0 {
+			statusCode = http.StatusOK
+		} else {
+			statusCode = rec.status
+		}
+	}
+	recordSession(statusCode)
+}
+
+func validateRexecRequest(w http.ResponseWriter, r *http.Request) (rexecRequest, bool) {
 	if !verifiedFrontProxy(r) {
 		recordError("front_proxy")
 		SysLogger.Error().Str("client_ip", getIP(r)).Msg("rejected exec request: missing or untrusted front-proxy client certificate")
@@ -83,74 +119,75 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 		if _, err := w.Write([]byte(httpForbidden)); err != nil {
 			SysLogger.Error().Err(err).Msg("failed to write forbidden response")
 		}
-		return
+		return rexecRequest{}, false
 	}
 
-	// parsing for vars
 	pathParams := mux.Vars(r)
-	namespace := pathParams["namespace"]
-	pod := pathParams["pod"]
-	user := r.Header.Get("X-Remote-User")
-
-	// if any of the minimal parameters are missing we should bail
-	if user == "" || namespace == "" || pod == "" {
+	req := rexecRequest{
+		namespace: pathParams["namespace"],
+		pod:       pathParams["pod"],
+		user:      r.Header.Get("X-Remote-User"),
+	}
+	if req.user == "" || req.namespace == "" || req.pod == "" {
 		w.WriteHeader(http.StatusForbidden)
 		if _, err := w.Write([]byte(httpForbidden)); err != nil {
 			SysLogger.Error().Err(err).Msg("failed to write forbidden response")
 		}
-		return
+		return rexecRequest{}, false
 	}
+
+	return req, true
+}
+
+func prepareRexecProxyRequest(w http.ResponseWriter, r *http.Request, req rexecRequest) bool {
 	r.Header.Add("Kubectl-Command", "kubectl exec")
 
-	// we check if the initially loaded jwt is still valid, if not we refresh it
-	err := ensureValidToken()
-	if err != nil {
+	if err := ensureValidToken(); err != nil {
 		recordError("token")
 		SysLogger.Error().Err(err).Msg("failed to check the service account token")
 		w.WriteHeader(http.StatusInternalServerError)
 		if _, err := w.Write([]byte(httpInternalError)); err != nil {
 			SysLogger.Error().Err(err).Msg("failed to write internal error response")
 		}
-		return
+		return false
 	}
-	// adding the service account token we are using for impersonating
+
 	r.Header.Add("Authorization", fmt.Sprintf("Bearer %s", token))
-
-	// add user to impersonation header
-	r.Header.Add("Impersonate-User", user)
-
-	// adding all passed groups as impersonation groups
-	groups := r.Header.Values("X-Remote-Group")
-	for _, group := range groups {
+	r.Header.Add("Impersonate-User", req.user)
+	for _, group := range r.Header.Values("X-Remote-Group") {
 		r.Header.Add("Impersonate-Group", group)
 	}
-
-	// for the webhook service part we need to signal somehow
-	// that we are allowed to do execs, coming through this endpoint
-	// so we pass a custom shared key through the `Impersonate-Extra-Secret-Sauce`
-	// header which will end up in `admissionReview.Request.UserInfo.Extra`
 	r.Header.Add("Impersonate-Extra-Secret-Sauce", SecretSauce)
 
-	// template old and new url paths and replace them in the url
-	newPath := fmt.Sprintf("api/v1/namespaces/%s/pods/%s/exec", namespace, pod)
-	oldPath := fmt.Sprintf("apis/audit.adyen.internal/v1beta1/namespaces/%s/pods/%s/exec", namespace, pod)
+	newPath := fmt.Sprintf("api/v1/namespaces/%s/pods/%s/exec", req.namespace, req.pod)
+	oldPath := fmt.Sprintf("apis/audit.adyen.internal/v1beta1/namespaces/%s/pods/%s/exec", req.namespace, req.pod)
 	r.URL.Path = strings.ReplaceAll(r.URL.Path, oldPath, newPath)
 	r.URL.RawPath = strings.ReplaceAll(r.URL.RawPath, oldPath, newPath)
 	r.Host = apiServerHost + ":443"
+	return true
+}
 
+func parseRexecExecParams(w http.ResponseWriter, r *http.Request) (rexecExecParams, bool) {
 	params, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
 		recordError("request_parse")
 		w.WriteHeader(http.StatusInternalServerError)
-		if _, err := w.Write([]byte(httpInternalError)); err != nil {
-			SysLogger.Error().Err(err).Msg("failed to write internal error response")
+		if _, writeErr := w.Write([]byte(httpInternalError)); writeErr != nil {
+			SysLogger.Error().Err(writeErr).Msg("failed to write internal error response")
 		}
-		return
+		return rexecExecParams{}, false
 	}
 
-	initialCommand, needsRecording, container := parseParams(params)
-	clientIP := getIP(r)
+	command, needsRecording, container := parseParams(params)
+	return rexecExecParams{
+		command:        command,
+		needsRecording: needsRecording,
+		container:      container,
+		clientIP:       getIP(r),
+	}, true
+}
 
+func buildRexecProxy(start time.Time) *httputil.ReverseProxy {
 	apiServerURL, _ := url.Parse("https://" + apiServerDial)
 	proxy := httputil.NewSingleHostReverseProxy(apiServerURL)
 	proxy.FlushInterval = -1
@@ -163,25 +200,26 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 		SysLogger.Error().Err(err).Msg("reverse proxy error")
 		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 	}
-	cmd := strings.Join(initialCommand, " ")
+	return proxy
+}
 
-	if !needsRecording {
-		activeSessions.WithLabelValues("oneoff").Inc()
-		defer activeSessions.WithLabelValues("oneoff").Dec()
-		proxy.Transport = apiServerTransport()
-		logCommand(cmd, user, "oneoff", namespace, pod, container, clientIP)
-		proxy.ServeHTTP(w, r)
-		return
-	}
+func serveOneoffRexecSession(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseProxy, req rexecRequest, execParams rexecExecParams, cmd string) {
+	activeSessions.WithLabelValues("oneoff").Inc()
+	defer activeSessions.WithLabelValues("oneoff").Dec()
+	proxy.Transport = apiServerTransport()
+	logCommand(cmd, req.user, "oneoff", req.namespace, req.pod, execParams.container, execParams.clientIP)
+	proxy.ServeHTTP(w, r)
+}
 
-	// tty exec audit keystrokes on tls conn see tcplogger
+func serveRecordingRexecSession(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseProxy, req rexecRequest, execParams rexecExecParams, cmd string) {
 	activeSessions.WithLabelValues("recording").Inc()
 	defer activeSessions.WithLabelValues("recording").Dec()
+
 	ctxid := uuid.New().String()
-	info := registerSession(ctxid, user, namespace, pod, container, clientIP)
+	info := registerSession(ctxid, req.user, req.namespace, req.pod, execParams.container, execParams.clientIP)
 	defer endSession(ctxid)
 
-	logCommand(cmd, user, ctxid, namespace, pod, container, clientIP)
+	logCommand(cmd, req.user, ctxid, req.namespace, req.pod, execParams.container, execParams.clientIP)
 	proxy.Transport = auditedAPIServerTransport(ctxid, info)
 	proxy.ServeHTTP(w, r)
 }
