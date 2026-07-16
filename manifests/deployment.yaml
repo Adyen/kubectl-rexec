@@ -26,7 +26,7 @@ spec:
         - containerPort: 8443
         args:
         - --audit-trace
-        - --by-pass-user=system:admin
+        - --bypass-user=system:admin
         resources:
           requests:
             ephemeral-storage: "1Gi"
