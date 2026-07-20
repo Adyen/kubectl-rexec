@@ -352,21 +352,28 @@ func getIP(r *http.Request) string {
 	return clientIP
 }
 
-func parseParams(params url.Values) (command []string, ttyRequested bool, container string) {
+func parseParams(params url.Values) (command []string, needsRecording bool, container string) {
 	// first fetch the command parameters from the url params to check what commands were passed
 	// initially to the container
+	var ttyRequested, stdinRequested bool
 	for key, value := range params {
 		if key == "command" {
 			command = value
 		}
-		// we also check whether tty was requested, if so we will need to record the session
-		if key == "tty" {
+		// a tty session carries interactive keystrokes that must be audited
+		if key == "tty" && len(value) > 0 && value[0] == "true" {
 			ttyRequested = true
+		}
+		// stdin (kubectl exec -i) can drive an interactive interpreter such as
+		// sh/bash/python without a tty. Without recording it, the entire session
+		// would only be logged as its initial command, leaving an unaudited shell.
+		if key == "stdin" && len(value) > 0 && value[0] == "true" {
+			stdinRequested = true
 		}
 		// check for container param
 		if key == "container" && len(value) > 0 {
 			container = value[0]
 		}
 	}
-	return command, ttyRequested, container
+	return command, ttyRequested || stdinRequested, container
 }
