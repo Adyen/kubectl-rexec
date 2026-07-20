@@ -28,7 +28,7 @@ func storeOrFlush(audit asyncAudit) {
 				commandMap[audit.ctxid] = commandMap[audit.ctxid][:len(commandMap[audit.ctxid])-1]
 			}
 			commandSync.Unlock()
-		case 13:
+		case 10, 13: // LF (non-tty line input) or CR (tty Enter)
 			commandSync.Lock()
 			logCommand(string(commandMap[audit.ctxid]), audit.info.User, audit.ctxid, audit.info.NameSpace, audit.info.Pod, audit.info.Container, audit.info.ClientIP)
 			commandMap[audit.ctxid] = nil
