@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/rs/zerolog"
 )
@@ -89,16 +91,55 @@ func endSession(ctxid string) {
 // write path is audited read path is pass through only
 type TCPLogger struct {
 	net.Conn
-	ctxid string
-	info  sessionInfo
+	ctxid         string
+	info          sessionInfo
+	auditSync     sync.Mutex
+	websocketOpen bool
+	headerTail    []byte
 }
 
 func (t *TCPLogger) Write(b []byte) (n int, err error) {
 	n, err = t.Conn.Write(b)
 	if n > 0 {
-		t.auditClientFrame(b[:n])
+		t.auditClientBytes(b[:n])
 	}
 	return n, err
+}
+
+func (t *TCPLogger) auditClientBytes(data []byte) {
+	t.auditSync.Lock()
+	defer t.auditSync.Unlock()
+
+	if !t.websocketOpen {
+		data = t.consumeHTTPUpgrade(data)
+	}
+	if len(data) > 0 {
+		t.auditClientFrame(data)
+	}
+}
+
+// consumeHTTPUpgrade ignores the initial HTTP upgrade request. Retaining only
+// the last three bytes is sufficient to detect a \r\n\r\n boundary split
+// across writes without buffering the complete request headers.
+func (t *TCPLogger) consumeHTTPUpgrade(data []byte) []byte {
+	const headerEnd = "\r\n\r\n"
+
+	combined := make([]byte, 0, len(t.headerTail)+len(data))
+	combined = append(combined, t.headerTail...)
+	combined = append(combined, data...)
+
+	if index := bytes.Index(combined, []byte(headerEnd)); index >= 0 {
+		t.websocketOpen = true
+		t.headerTail = nil
+		return combined[index+len(headerEnd):]
+	}
+
+	const boundaryTailLength = len(headerEnd) - 1
+	if len(combined) > boundaryTailLength {
+		combined = combined[len(combined)-boundaryTailLength:]
+	}
+	t.headerTail = append(t.headerTail[:0], combined...)
+	return nil
 }
 
 func (t *TCPLogger) auditClientFrame(frameBytes []byte) {
@@ -116,15 +157,17 @@ func (t *TCPLogger) auditClientFrame(frameBytes []byte) {
 
 		// websocket opcodes we might see: 0x0 continuation 0x1 text 0x2 binary
 		// 0x8 close 0x9 ping 0xA pong
-		// kubectl exec sends terminal input as 0x2 binary only that goes to async audit
-		if parsed.Opcode != 0x2 {
+		// Kubernetes prefixes each binary payload with its remotecommand stream
+		// channel. Only channel 0 is terminal stdin; channel 4 carries resize data.
+		if parsed.Opcode != 0x2 || len(parsed.Payload) < 2 || parsed.Payload[0] != 0 {
 			continue
 		}
+		stdin := parsed.Payload[1:]
 
 		if auditLogger.GetLevel() == zerolog.TraceLevel {
-			t.logTraceStroke(parsed.Payload)
+			t.logTraceStroke(stdin)
 		}
-		asyncAuditChan <- asyncAudit{ctxid: t.ctxid, info: t.info, ascii: parsed.Payload}
+		asyncAuditChan <- asyncAudit{ctxid: t.ctxid, info: t.info, ascii: stdin}
 	}
 }
 
