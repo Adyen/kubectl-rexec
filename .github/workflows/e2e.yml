@@ -57,8 +57,6 @@ jobs:
 
       - name: Run e2e smoke checks
         run: |
-          echo "PATH is: $PATH"
-          type -a go
           chmod +x ./scripts/e2e.sh
           ./scripts/e2e.sh
 
