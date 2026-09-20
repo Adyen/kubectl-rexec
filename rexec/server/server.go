@@ -17,6 +17,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// maxAdmissionReviewBytes caps the /validate-exec request body. Real
+// AdmissionReview payloads are a few KiB at most.
+const maxAdmissionReviewBytes = 1 << 20 // 1 MiB
+
 type rexecRequest struct {
 	namespace string
 	pod       string
@@ -24,10 +28,10 @@ type rexecRequest struct {
 }
 
 type rexecExecParams struct {
-	command       []string
+	command        []string
 	needsRecording bool
-	container     string
-	clientIP      string
+	container      string
+	clientIP       string
 }
 
 func Server() {
@@ -55,9 +59,16 @@ func Server() {
 	// not RequireAndVerifyClientCert at the listener because the admission
 	// webhook (/validate-exec) is served on the same port and the apiserver does
 	// not necessarily present a requestheader certificate when calling it.
+	// ReadHeaderTimeout and IdleTimeout bound slow-connection (Slowloris)
+	// resource exhaustion against this fail-closed webhook backend.
+	// ReadTimeout/WriteTimeout are deliberately not set: exec sessions upgrade
+	// to long-lived WebSocket connections that the reverse proxy hijacks, and
+	// server-wide read/write deadlines would break or add no value to them.
 	srv := &http.Server{
-		Addr:    ":8443",
-		Handler: r,
+		Addr:              ":8443",
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 			ClientCAs:  RequestHeaderCAPool,
@@ -80,12 +91,31 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !prepareRexecProxyRequest(w, r, req) {
+	execParams, ok := parseRexecExecParams(w, r)
+	if !ok {
 		return
 	}
 
-	execParams, ok := parseRexecExecParams(w, r)
-	if !ok {
+	// Interactive sessions are only auditable over WebSocket: the audit tap in
+	// TCPLogger parses WebSocket frames, and SPDY streams would be proxied
+	// without any keystroke auditing. Reject instead of serving an unaudited
+	// session. A client lying about the upgrade type simply fails the upstream
+	// WebSocket handshake and gets no session.
+	if execParams.needsRecording && !isWebSocketUpgrade(r) {
+		recordError("transport")
+		SysLogger.Error().
+			Str("client_ip", execParams.clientIP).
+			Str("user", req.user).
+			Str("upgrade", r.Header.Get("Upgrade")).
+			Msg("rejected recorded session: interactive exec requires a WebSocket upgrade")
+		w.WriteHeader(http.StatusBadRequest)
+		if _, err := w.Write([]byte("interactive rexec sessions require the WebSocket protocol (SPDY is not auditable)\n")); err != nil {
+			SysLogger.Error().Err(err).Msg("failed to write bad request response")
+		}
+		return
+	}
+
+	if !prepareRexecProxyRequest(w, r, req) {
 		return
 	}
 
@@ -271,8 +301,17 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bound the decoded body: AdmissionReview payloads are small, and an
+	// unbounded decode lets any in-cluster caller exhaust this fail-closed
+	// webhook backend's memory.
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdmissionReviewBytes)
 	var admissionReview admissionv1.AdmissionReview
 	if err := json.NewDecoder(r.Body).Decode(&admissionReview); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, fmt.Sprintf("Failed to decode request: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -352,6 +391,36 @@ func getIP(r *http.Request) string {
 	return clientIP
 }
 
+// isTruthy mirrors the kube-apiserver's boolean query decoding
+// (runtime.Convert_Slice_string_To_bool): only an absent parameter, "0", or
+// "false" (case-insensitive) is false; every other value, including "1" and
+// the empty string, is true. Matching the apiserver exactly is what prevents
+// an interactive session from being smuggled past the recording path with a
+// spelling like stdin=1.
+func isTruthy(values []string) bool {
+	if len(values) == 0 {
+		return false
+	}
+	v := values[0]
+	return !(v == "0" || strings.EqualFold(v, "false"))
+}
+
+// isWebSocketUpgrade reports whether the request is a WebSocket upgrade. It
+// mirrors the check the kubelet's wsstream package performs.
+func isWebSocketUpgrade(r *http.Request) bool {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	for _, header := range r.Header[http.CanonicalHeaderKey("Connection")] {
+		for _, token := range strings.Split(header, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func parseParams(params url.Values) (command []string, needsRecording bool, container string) {
 	// first fetch the command parameters from the url params to check what commands were passed
 	// initially to the container
@@ -361,13 +430,13 @@ func parseParams(params url.Values) (command []string, needsRecording bool, cont
 			command = value
 		}
 		// a tty session carries interactive keystrokes that must be audited
-		if key == "tty" && len(value) > 0 && value[0] == "true" {
+		if key == "tty" && isTruthy(value) {
 			ttyRequested = true
 		}
 		// stdin (kubectl exec -i) can drive an interactive interpreter such as
 		// sh/bash/python without a tty. Without recording it, the entire session
 		// would only be logged as its initial command, leaving an unaudited shell.
-		if key == "stdin" && len(value) > 0 && value[0] == "true" {
+		if key == "stdin" && isTruthy(value) {
 			stdinRequested = true
 		}
 		// check for container param
