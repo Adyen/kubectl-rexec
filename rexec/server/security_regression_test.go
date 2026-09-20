@@ -309,77 +309,53 @@ func TestRegressionParseParamsKubernetesTruthiness(t *testing.T) {
 	}
 }
 
-// SPDY interactive sessions must be rejected: the audit tap parses WebSocket
-// frames, so proxying SPDY would serve an unaudited session.
-func TestRegressionRejectsSPDYRecordingSession(t *testing.T) {
+// The audit tap parses WebSocket frames: interactive (recorded) sessions
+// must arrive over WebSocket, SPDY interactive sessions are rejected, and
+// SPDY one-off sessions (`kubectl rexec cp`) keep working.
+func TestRegressionTransportGate(t *testing.T) {
 	oldNames := RequestHeaderAllowedNames
 	t.Cleanup(func() { RequestHeaderAllowedNames = oldNames })
 	RequestHeaderAllowedNames = nil
 
-	req := httptest.NewRequest(http.MethodGet,
-		"/apis/audit.adyen.internal/v1beta1/namespaces/ns/pods/pod/exec?command=sh&tty=true", nil)
-	req.Header.Set("X-Remote-User", "alice")
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "SPDY/3.1")
-	req.Header.Set("X-Stream-Protocol-Version", "v4.channel.k8s.io")
-	req = withFrontProxyCert(req, "front-proxy-client")
-	req = mux.SetURLVars(req, map[string]string{"namespace": "ns", "pod": "pod"})
-
-	rr := httptest.NewRecorder()
-	rexecHandler(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+	cases := []struct {
+		name         string
+		query        string
+		connection   string
+		upgrade      string
+		streamProto  bool
+		wantRejected bool
+	}{
+		{"SPDY interactive rejected", "command=sh&tty=true", "Upgrade", "SPDY/3.1", true, true},
+		{"SPDY one-off passes", "command=tar&stdout=true", "Upgrade", "SPDY/3.1", false, false},
+		{"WebSocket interactive passes", "command=sh&stdin=true", "keep-alive, Upgrade", "websocket", false, false},
 	}
-	if !strings.Contains(rr.Body.String(), "WebSocket") {
-		t.Fatalf("body = %q, want a WebSocket requirement message", rr.Body.String())
-	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet,
+				"/apis/audit.adyen.internal/v1beta1/namespaces/ns/pods/pod/exec?"+tc.query, nil)
+			req.Header.Set("X-Remote-User", "alice")
+			req.Header.Set("Connection", tc.connection)
+			req.Header.Set("Upgrade", tc.upgrade)
+			if tc.streamProto {
+				req.Header.Set("X-Stream-Protocol-Version", "v4.channel.k8s.io")
+			}
+			req = withFrontProxyCert(req, "front-proxy-client")
+			req = mux.SetURLVars(req, map[string]string{"namespace": "ns", "pod": "pod"})
 
-// The one-off (non-interactive) path must keep working for SPDY clients:
-// `kubectl rexec cp` uses a SPDY executor without stdin/tty.
-func TestRegressionOneoffSPDYPassesTransportGate(t *testing.T) {
-	oldNames := RequestHeaderAllowedNames
-	t.Cleanup(func() { RequestHeaderAllowedNames = oldNames })
-	RequestHeaderAllowedNames = nil
+			rr := httptest.NewRecorder()
+			rexecHandler(rr, req)
 
-	req := httptest.NewRequest(http.MethodGet,
-		"/apis/audit.adyen.internal/v1beta1/namespaces/ns/pods/pod/exec?command=tar&stdout=true", nil)
-	req.Header.Set("X-Remote-User", "alice")
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "SPDY/3.1")
-	req = withFrontProxyCert(req, "front-proxy-client")
-	req = mux.SetURLVars(req, map[string]string{"namespace": "ns", "pod": "pod"})
-
-	rr := httptest.NewRecorder()
-	rexecHandler(rr, req)
-
-	// No service-account token exists in tests, so the handler fails later
-	// with a 500; what matters is that the transport gate did not reject it.
-	if rr.Code == http.StatusBadRequest {
-		t.Fatalf("one-off SPDY session must not be rejected by the transport gate: %s", rr.Body.String())
-	}
-}
-
-// A WebSocket interactive session passes the transport gate.
-func TestRegressionWebSocketRecordingPassesTransportGate(t *testing.T) {
-	oldNames := RequestHeaderAllowedNames
-	t.Cleanup(func() { RequestHeaderAllowedNames = oldNames })
-	RequestHeaderAllowedNames = nil
-
-	req := httptest.NewRequest(http.MethodGet,
-		"/apis/audit.adyen.internal/v1beta1/namespaces/ns/pods/pod/exec?command=sh&stdin=true", nil)
-	req.Header.Set("X-Remote-User", "alice")
-	req.Header.Set("Connection", "keep-alive, Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req = withFrontProxyCert(req, "front-proxy-client")
-	req = mux.SetURLVars(req, map[string]string{"namespace": "ns", "pod": "pod"})
-
-	rr := httptest.NewRecorder()
-	rexecHandler(rr, req)
-
-	if rr.Code == http.StatusBadRequest {
-		t.Fatalf("WebSocket recording session must pass the transport gate: %s", rr.Body.String())
+			// No service-account token exists in tests, so accepted requests
+			// fail later with a 500; what matters is the gate's verdict.
+			rejected := rr.Code == http.StatusBadRequest
+			if rejected != tc.wantRejected {
+				t.Fatalf("rejected = %v (status %d, body %q), want rejected = %v",
+					rejected, rr.Code, rr.Body.String(), tc.wantRejected)
+			}
+			if rejected && !strings.Contains(rr.Body.String(), "WebSocket") {
+				t.Fatalf("body = %q, want a WebSocket requirement message", rr.Body.String())
+			}
+		})
 	}
 }
 
@@ -418,10 +394,10 @@ func auditCommands(t *testing.T, buf *bytes.Buffer) []string {
 	}
 }
 
-// A trailing command without a line terminator is still executed by shells
-// when stdin hits EOF, so it must be flushed into the audit at session end
-// instead of being discarded with the session's line buffer.
-func TestRegressionUnterminatedCommandFlushedAtSessionEnd(t *testing.T) {
+// setupCommandAudit installs fresh session/command maps and an audit logger
+// writing to the returned buffer, restoring the originals after the test.
+func setupCommandAudit(t *testing.T) *bytes.Buffer {
+	t.Helper()
 	oldSessionMap := sessionMap
 	oldCommandMap := commandMap
 	oldAuditLogger := auditLogger
@@ -438,6 +414,14 @@ func TestRegressionUnterminatedCommandFlushedAtSessionEnd(t *testing.T) {
 	MaxStokesPerLine = 2000 // production default
 	var output bytes.Buffer
 	auditLogger = zerolog.New(&output)
+	return &output
+}
+
+// A trailing command without a line terminator is still executed by shells
+// when stdin hits EOF, so it must be flushed into the audit at session end
+// instead of being discarded with the session's line buffer.
+func TestRegressionUnterminatedCommandFlushedAtSessionEnd(t *testing.T) {
+	output := setupCommandAudit(t)
 
 	const id = "eof-session"
 	registerSession(id, "mallory", "default", "shell", "app", "192.0.2.1")
@@ -445,7 +429,7 @@ func TestRegressionUnterminatedCommandFlushedAtSessionEnd(t *testing.T) {
 	endSession(id)
 
 	found := false
-	for _, cmd := range auditCommands(t, &output) {
+	for _, cmd := range auditCommands(t, output) {
 		if strings.Contains(cmd, "touch /tmp/stealth") {
 			found = true
 		}
@@ -459,28 +443,13 @@ func TestRegressionUnterminatedCommandFlushedAtSessionEnd(t *testing.T) {
 // the audited command must contain exactly the bytes that were delivered,
 // not a silently merged version with NULs stripped.
 func TestRegressionNULBytesPreservedInAudit(t *testing.T) {
-	oldSessionMap := sessionMap
-	oldCommandMap := commandMap
-	oldAuditLogger := auditLogger
-	oldMax := MaxStokesPerLine
-	t.Cleanup(func() {
-		sessionMap = oldSessionMap
-		commandMap = oldCommandMap
-		auditLogger = oldAuditLogger
-		MaxStokesPerLine = oldMax
-	})
-
-	sessionMap = map[string]sessionInfo{}
-	commandMap = map[string][]byte{}
-	MaxStokesPerLine = 2000
-	var output bytes.Buffer
-	auditLogger = zerolog.New(&output)
+	output := setupCommandAudit(t)
 
 	const id = "nul-session"
 	registerSession(id, "mallory", "default", "shell", "app", "192.0.2.1")
 	storeOrFlush(asyncAudit{ctxid: id, ascii: []byte("id\x00whoami\r")})
 
-	cmds := auditCommands(t, &output)
+	cmds := auditCommands(t, output)
 	if len(cmds) != 1 {
 		t.Fatalf("expected exactly one command record, got %v", cmds)
 	}

@@ -102,6 +102,33 @@ func (c *cappedWriter) Write(p []byte) (int, error) {
 
 func (c *cappedWriter) exceeded() bool { return c.err != nil }
 
+// tarLimits tracks the entry count and declared content bytes of one
+// extraction. The pod controls the stream, so both are bounded: declared
+// sizes are used, meaning sparse entries count in full.
+type tarLimits struct {
+	maxEntries int64
+	maxBytes   int64
+	entries    int64
+	totalBytes int64
+}
+
+func (l *tarLimits) add(header *tar.Header) error {
+	l.entries++
+	if l.entries > l.maxEntries {
+		return fmt.Errorf("tar contains too many entries (limit %d)", l.maxEntries)
+	}
+	if header.Typeflag == tar.TypeReg {
+		if header.Size < 0 {
+			return fmt.Errorf("tar entry %s has a negative size", sanitizeTerminal(header.Name))
+		}
+		l.totalBytes += header.Size
+		if l.totalBytes > l.maxBytes {
+			return fmt.Errorf("extracted content exceeds the %d byte limit", l.maxBytes)
+		}
+	}
+	return nil
+}
+
 // truncatingBuffer keeps only the first max bytes; excess is discarded and
 // marked, because stderr overflow must not kill the copy.
 type truncatingBuffer struct {
@@ -416,7 +443,7 @@ func (o *CopyOptions) extractTar(reader io.Reader, destPath, srcBase string) err
 	}
 
 	tarReader := tar.NewReader(reader)
-	var entries, totalBytes int64
+	limits := &tarLimits{maxEntries: o.maxTarEntries(), maxBytes: o.maxArchiveBytes()}
 	for {
 		header, err := tarReader.Next()
 		if err == io.EOF {
@@ -425,21 +452,8 @@ func (o *CopyOptions) extractTar(reader io.Reader, destPath, srcBase string) err
 		if err != nil {
 			return fmt.Errorf("tar read error: %v", err)
 		}
-
-		// The pod controls the stream: bound the entry count and the total
-		// extracted content (declared sizes, so sparse entries count in full).
-		entries++
-		if entries > o.maxTarEntries() {
-			return fmt.Errorf("tar contains too many entries (limit %d)", o.maxTarEntries())
-		}
-		if header.Typeflag == tar.TypeReg {
-			if header.Size < 0 {
-				return fmt.Errorf("tar entry %s has a negative size", sanitizeTerminal(header.Name))
-			}
-			totalBytes += header.Size
-			if totalBytes > o.maxArchiveBytes() {
-				return fmt.Errorf("extracted content exceeds the %d byte limit", o.maxArchiveBytes())
-			}
+		if err := limits.add(header); err != nil {
+			return err
 		}
 
 		// Security: validate and compute safe target path
