@@ -33,6 +33,12 @@ type CopyOptions struct {
 	ClientConfig *restclient.Config
 	Clientset    kubernetes.Interface
 	IOStreams    genericiooptions.IOStreams
+
+	// MaxArchiveBytes bounds the tar stream read from the pod and the total
+	// extracted content. MaxEntries bounds the number of tar entries.
+	// Zero values fall back to the defaults; the flags set explicit values.
+	MaxArchiveBytes int64
+	MaxEntries      int64
 }
 
 type fileSpec struct {
@@ -42,6 +48,86 @@ type fileSpec struct {
 }
 
 const errPathTraversal = "illegal file path in tar: %s (path traversal attempt)"
+
+const (
+	// defaultMaxArchiveBytes bounds the tar stream pulled from a pod: the pod
+	// controls the stream, so without a cap a hostile workload could exhaust
+	// the client's memory.
+	defaultMaxArchiveBytes = 512 << 20 // 512 MiB
+	// defaultMaxEntries bounds the tar entry count against metadata bombs.
+	defaultMaxEntries = 100_000
+	// maxStderrBytes bounds the pod's stderr; it is only used for error
+	// messages, so excess is truncated with a marker instead of failing.
+	maxStderrBytes = 4 << 20 // 4 MiB
+)
+
+func (o *CopyOptions) maxArchiveBytes() int64 {
+	if o.MaxArchiveBytes > 0 {
+		return o.MaxArchiveBytes
+	}
+	return defaultMaxArchiveBytes
+}
+
+func (o *CopyOptions) maxTarEntries() int64 {
+	if o.MaxEntries > 0 {
+		return o.MaxEntries
+	}
+	return defaultMaxEntries
+}
+
+// cappedWriter fails the stream once more than max bytes pass through.
+type cappedWriter struct {
+	w   io.Writer
+	max int64
+	n   int64
+	err error
+}
+
+func (c *cappedWriter) Write(p []byte) (int, error) {
+	if c.err != nil {
+		return 0, c.err
+	}
+	if remaining := c.max - c.n; int64(len(p)) > remaining {
+		if remaining > 0 {
+			_, _ = c.w.Write(p[:remaining])
+		}
+		c.n = c.max
+		c.err = fmt.Errorf("stream exceeds the %d byte limit", c.max)
+		return 0, c.err
+	}
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
+func (c *cappedWriter) exceeded() bool { return c.err != nil }
+
+// truncatingBuffer keeps only the first max bytes; excess is discarded and
+// marked, because stderr overflow must not kill the copy.
+type truncatingBuffer struct {
+	buf       bytes.Buffer
+	max       int64
+	truncated bool
+}
+
+func (t *truncatingBuffer) Write(p []byte) (int, error) {
+	if remaining := t.max - int64(t.buf.Len()); remaining >= int64(len(p)) {
+		t.buf.Write(p)
+	} else {
+		if remaining > 0 {
+			t.buf.Write(p[:remaining])
+		}
+		t.truncated = true
+	}
+	return len(p), nil
+}
+
+func (t *truncatingBuffer) String() string {
+	if t.truncated {
+		return t.buf.String() + "\n[... stderr truncated ...]"
+	}
+	return t.buf.String()
+}
 
 // sanitizeTerminal strips control characters from pod-controlled strings
 // before they reach the user's terminal, so a workload cannot inject escape
@@ -97,6 +183,8 @@ func NewCmdCp(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Co
 	}
 
 	cmd.Flags().StringVarP(&o.Container, "container", "c", "", "Container name. If omitted, use the first container")
+	cmd.Flags().Int64Var(&o.MaxArchiveBytes, "cp-max-archive-size", defaultMaxArchiveBytes, "Maximum bytes read from the pod and extracted (the pod controls the stream)")
+	cmd.Flags().Int64Var(&o.MaxEntries, "cp-max-files", defaultMaxEntries, "Maximum number of tar entries accepted from the pod")
 	return cmd
 }
 
@@ -206,10 +294,17 @@ func (o *CopyOptions) copyFromPod(ctx context.Context, src, dest *fileSpec) erro
 	srcBase := filepath.Base(src.File)
 	command := []string{"tar", "cf", "-", "-C", srcDir, "--", srcBase}
 
-	var stdout, stderr bytes.Buffer
-	execErr := o.executeRemote(ctx, pod, containerName, command, &stdout, &stderr)
+	// The pod controls both streams: cap stdout hard (it becomes local files
+	// and memory) and truncate stderr softly (it only feeds error messages).
+	var stdout bytes.Buffer
+	cappedStdout := &cappedWriter{w: &stdout, max: o.maxArchiveBytes()}
+	stderr := &truncatingBuffer{max: maxStderrBytes}
+	execErr := o.executeRemote(ctx, pod, containerName, command, cappedStdout, stderr)
 
 	if execErr != nil {
+		if cappedStdout.exceeded() {
+			return fmt.Errorf("archive from pod exceeds the %d byte limit (raise with --cp-max-archive-size)", o.maxArchiveBytes())
+		}
 		return o.handleExecError(execErr, stderr.String(), src)
 	}
 
@@ -273,7 +368,7 @@ func (o *CopyOptions) resolveContainer(pod *corev1.Pod) (string, error) {
 	return container.Name, nil
 }
 
-func (o *CopyOptions) executeRemote(ctx context.Context, pod *corev1.Pod, container string, command []string, stdout, stderr *bytes.Buffer) error {
+func (o *CopyOptions) executeRemote(ctx context.Context, pod *corev1.Pod, container string, command []string, stdout, stderr io.Writer) error {
 	restClient, err := restclient.RESTClientFor(o.ClientConfig)
 	if err != nil {
 		return err
@@ -319,6 +414,7 @@ func (o *CopyOptions) extractTar(reader io.Reader, destPath, srcBase string) err
 	}
 
 	tarReader := tar.NewReader(reader)
+	var entries, totalBytes int64
 	for {
 		header, err := tarReader.Next()
 		if err == io.EOF {
@@ -326,6 +422,22 @@ func (o *CopyOptions) extractTar(reader io.Reader, destPath, srcBase string) err
 		}
 		if err != nil {
 			return fmt.Errorf("tar read error: %v", err)
+		}
+
+		// The pod controls the stream: bound the entry count and the total
+		// extracted content (declared sizes, so sparse entries count in full).
+		entries++
+		if entries > o.maxTarEntries() {
+			return fmt.Errorf("tar contains too many entries (limit %d)", o.maxTarEntries())
+		}
+		if header.Typeflag == tar.TypeReg {
+			if header.Size < 0 {
+				return fmt.Errorf("tar entry %s has a negative size", sanitizeTerminal(header.Name))
+			}
+			totalBytes += header.Size
+			if totalBytes > o.maxArchiveBytes() {
+				return fmt.Errorf("extracted content exceeds the %d byte limit", o.maxArchiveBytes())
+			}
 		}
 
 		// Security: validate and compute safe target path

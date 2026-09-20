@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"k8s.io/cli-runtime/pkg/genericiooptions"
@@ -79,4 +80,83 @@ func TestRegressionCpSymlinkCannotEscapeDestination(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(outside, "pwned")); err == nil {
 		t.Fatal("extraction escaped the destination via a pre-existing symlink")
 	}
+}
+
+// The pod controls the tar stream and its own stderr: the client must bound
+// memory and disk against hostile or broken workloads.
+func TestRegressionCpResourceLimits(t *testing.T) {
+	t.Run("archive stream cap fails the copy", func(t *testing.T) {
+		var buf bytes.Buffer
+		cw := &cappedWriter{w: &buf, max: 10}
+		if _, err := cw.Write([]byte("123456")); err != nil {
+			t.Fatalf("write within cap: %v", err)
+		}
+		if _, err := cw.Write([]byte("789012")); err == nil {
+			t.Fatal("write past the cap must fail")
+		}
+		if _, err := cw.Write([]byte("x")); err == nil {
+			t.Fatal("cap error must be sticky")
+		}
+		if buf.Len() != 10 {
+			t.Fatalf("underlying writer must hold exactly the cap, got %d", buf.Len())
+		}
+	})
+
+	t.Run("stderr is truncated with a marker, never fatal", func(t *testing.T) {
+		tb := &truncatingBuffer{max: 10}
+		if _, err := tb.Write([]byte("abcdefghijklmnopqrst")); err != nil {
+			t.Fatalf("stderr overflow must not error: %v", err)
+		}
+		if !tb.truncated || !strings.Contains(tb.String(), "truncated") {
+			t.Fatalf("expected truncation marker, got %q", tb.String())
+		}
+		if !strings.HasPrefix(tb.String(), "abcdefghij") {
+			t.Fatalf("kept content = %q", tb.String())
+		}
+	})
+
+	t.Run("entry count cap", func(t *testing.T) {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		for _, name := range []string{"d/a", "d/b", "d/c"} {
+			if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0644, Size: 1, Typeflag: tar.TypeReg}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write([]byte("x")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		o := &CopyOptions{MaxEntries: 2, IOStreams: genericiooptions.IOStreams{ErrOut: &bytes.Buffer{}}}
+		err := o.extractTar(&buf, t.TempDir(), "d")
+		if err == nil || !strings.Contains(err.Error(), "too many entries") {
+			t.Fatalf("expected entry-count rejection, got %v", err)
+		}
+	})
+
+	t.Run("extracted bytes cap uses declared sizes", func(t *testing.T) {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		content := bytes.Repeat([]byte("x"), 100)
+		if err := tw.WriteHeader(&tar.Header{Name: "d/big", Mode: 0644, Size: int64(len(content)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(content); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		dest := t.TempDir()
+		o := &CopyOptions{MaxArchiveBytes: 10, IOStreams: genericiooptions.IOStreams{ErrOut: &bytes.Buffer{}}}
+		err := o.extractTar(&buf, dest, "d")
+		if err == nil || !strings.Contains(err.Error(), "exceeds the 10 byte limit") {
+			t.Fatalf("expected size-cap rejection, got %v", err)
+		}
+		if _, statErr := os.Stat(filepath.Join(dest, "d", "big")); statErr == nil {
+			t.Fatal("oversized entry must not be written")
+		}
+	})
 }
