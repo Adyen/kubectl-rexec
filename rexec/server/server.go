@@ -248,7 +248,10 @@ func serveRecordingRexecSession(w http.ResponseWriter, r *http.Request, proxy *h
 
 	ctxid := uuid.New().String()
 	info := registerSession(ctxid, req.user, req.namespace, req.pod, execParams.container, execParams.clientIP)
-	defer endSession(ctxid)
+	defer func() {
+		drainAsyncAudits()
+		endSession(ctxid)
+	}()
 
 	logCommand(cmd, req.user, ctxid, req.namespace, req.pod, execParams.container, execParams.clientIP)
 	proxy.Transport = auditedAPIServerTransport(ctxid, info)
