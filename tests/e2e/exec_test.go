@@ -441,10 +441,12 @@ func TestExecAuthorizationAndWebhook(t *testing.T) {
 
 	t.Run("impersonated groups are preserved", func(t *testing.T) {
 		token := uniqueToken("group-rbac")
+		// This synthetic user has no direct binding. In the disposable Kind
+		// cluster, success therefore requires rexec to forward system:masters.
 		result := env.runRexec(t, "", nil,
 			"--as=rexec-e2e-group-user",
 			"--as-group=system:authenticated",
-			"--as-group=rexec-e2e-exec",
+			"--as-group=system:masters",
 			"exec", env.pod, "-n", env.namespace, "-c", primaryContainer, "--",
 			"printf", "%s", token,
 		)

@@ -49,8 +49,8 @@ jobs:
       - name: Install kind
         run: |
           set -euo pipefail
-          curl -fsSL -o kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
-          curl -fsSL -o kind.sha256sum "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64.sha256sum"
+          curl --proto '=https' --proto-redir '=https' -fsSL -o kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          curl --proto '=https' --proto-redir '=https' -fsSL -o kind.sha256sum "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64.sha256sum"
           expected_sha="$(awk '{print $1}' kind.sha256sum)"
           echo "${expected_sha}  kind" | sha256sum --check
           install -m 0755 kind "${HOME}/kind"
@@ -60,8 +60,8 @@ jobs:
       - name: Ensure kubectl is installed
         run: |
           set -euo pipefail
-          curl -fsSL -o kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
-          curl -fsSL -o kubectl.sha256 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256"
+          curl --proto '=https' --proto-redir '=https' -fsSL -o kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          curl --proto '=https' --proto-redir '=https' -fsSL -o kubectl.sha256 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256"
           echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
           install -m 0755 kubectl "${HOME}/kubectl"
           echo "${HOME}" >> "${GITHUB_PATH}"

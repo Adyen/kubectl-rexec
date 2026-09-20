@@ -18,6 +18,7 @@ metadata:
   annotations:
     kubectl.kubernetes.io/default-container: primary
 spec:
+  automountServiceAccountToken: false
   restartPolicy: Never
   containers:
   - name: primary
@@ -27,6 +28,11 @@ spec:
     env:
     - name: REXEC_CONTAINER
       value: primary
+    resources:
+      requests:
+        memory: 4Mi
+      limits:
+        memory: 32Mi
   - name: secondary
     image: __TEST_IMAGE__
     imagePullPolicy: IfNotPresent
@@ -34,6 +40,11 @@ spec:
     env:
     - name: REXEC_CONTAINER
       value: secondary
+    resources:
+      requests:
+        memory: 4Mi
+      limits:
+        memory: 32Mi
 ---
 apiVersion: v1
 kind: Pod
@@ -43,6 +54,7 @@ metadata:
   labels:
     app: rexec-e2e-running
 spec:
+  automountServiceAccountToken: false
   restartPolicy: Never
   containers:
   - name: primary
@@ -52,6 +64,11 @@ spec:
     env:
     - name: REXEC_CONTAINER
       value: primary
+    resources:
+      requests:
+        memory: 4Mi
+      limits:
+        memory: 32Mi
   - name: secondary
     image: __TEST_IMAGE__
     imagePullPolicy: IfNotPresent
@@ -59,6 +76,11 @@ spec:
     env:
     - name: REXEC_CONTAINER
       value: secondary
+    resources:
+      requests:
+        memory: 4Mi
+      limits:
+        memory: 32Mi
 ---
 apiVersion: v1
 kind: Pod
@@ -68,6 +90,7 @@ metadata:
   labels:
     app: rexec-e2e-running
 spec:
+  automountServiceAccountToken: false
   restartPolicy: Never
   containers:
   - name: primary
@@ -77,6 +100,11 @@ spec:
     env:
     - name: REXEC_CONTAINER
       value: other-namespace
+    resources:
+      requests:
+        memory: 4Mi
+      limits:
+        memory: 32Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -93,6 +121,7 @@ spec:
       labels:
         app: rexec-e2e-resource
     spec:
+      automountServiceAccountToken: false
       containers:
       - name: primary
         image: __TEST_IMAGE__
@@ -101,6 +130,11 @@ spec:
         env:
         - name: REXEC_CONTAINER
           value: resource
+        resources:
+          requests:
+            memory: 4Mi
+          limits:
+            memory: 32Mi
 ---
 apiVersion: v1
 kind: Service
@@ -129,11 +163,17 @@ spec:
       labels:
         app: rexec-e2e-pending
     spec:
+      automountServiceAccountToken: false
       containers:
       - name: primary
         image: __TEST_IMAGE__
         imagePullPolicy: IfNotPresent
         command: [sleep, infinity]
+        resources:
+          requests:
+            memory: 4Mi
+          limits:
+            memory: 32Mi
 ---
 apiVersion: v1
 kind: Pod
@@ -141,24 +181,31 @@ metadata:
   name: completed-target
   namespace: __NAMESPACE__
 spec:
+  automountServiceAccountToken: false
   restartPolicy: Never
   containers:
   - name: primary
     image: __TEST_IMAGE__
     imagePullPolicy: IfNotPresent
     command: [sh, -c, "exit 0"]
+    resources:
+      requests:
+        memory: 4Mi
+      limits:
+        memory: 32Mi
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: rexec-e2e-read-api
+  namespace: __NAMESPACE__
 rules:
 - apiGroups: [""]
   resources: [pods]
   verbs: [get, list]
 - apiGroups: [audit.adyen.internal]
   resources: [pods/exec]
-  verbs: [create, get]
+  verbs: [create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -170,32 +217,6 @@ subjects:
   name: rexec-e2e-denied
   apiGroup: rbac.authorization.k8s.io
 roleRef:
-  kind: ClusterRole
+  kind: Role
   name: rexec-e2e-read-api
-  apiGroup: rbac.authorization.k8s.io
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: rexec-e2e-exec
-rules:
-- apiGroups: [""]
-  resources: [pods, pods/exec]
-  verbs: [get, list, create]
-- apiGroups: [audit.adyen.internal]
-  resources: [pods/exec]
-  verbs: [create, get]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: rexec-e2e-exec
-  namespace: __NAMESPACE__
-subjects:
-- kind: Group
-  name: rexec-e2e-exec
-  apiGroup: rbac.authorization.k8s.io
-roleRef:
-  kind: ClusterRole
-  name: rexec-e2e-exec
   apiGroup: rbac.authorization.k8s.io
