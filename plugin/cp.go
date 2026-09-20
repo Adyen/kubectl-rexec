@@ -372,6 +372,14 @@ func computeSafeTarget(name, destPath, baseAbs, srcBase string, destIsDir bool) 
 	if destIsDir {
 		target = filepath.Join(destPath, cleanName)
 	} else {
+		// Copying to a non-directory destination: the tar stream is produced
+		// by `tar cf - -C <dir> -- <srcBase>`, so every legitimate entry is
+		// exactly srcBase or lives under it. Anything else (e.g. "foobar" or
+		// "foo2/evil", which filepath.Rel would map to "../...") is a crafted
+		// stream trying to write siblings of the requested file.
+		if cleanName != srcBase && !strings.HasPrefix(cleanName, srcBase+"/") {
+			return "", fmt.Errorf(errPathTraversal, name)
+		}
 		rel, err := filepath.Rel(srcBase, cleanName)
 		if err != nil {
 			return "", fmt.Errorf("failed to calculate relative path: %v", err)
