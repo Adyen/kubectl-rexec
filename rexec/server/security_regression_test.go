@@ -454,3 +454,37 @@ func TestRegressionUnterminatedCommandFlushedAtSessionEnd(t *testing.T) {
 		t.Fatal("unterminated final command must be flushed to the command audit at session end")
 	}
 }
+
+// NUL bytes are meaningful to record-oriented consumers (xargs -0, scripts):
+// the audited command must contain exactly the bytes that were delivered,
+// not a silently merged version with NULs stripped.
+func TestRegressionNULBytesPreservedInAudit(t *testing.T) {
+	oldSessionMap := sessionMap
+	oldCommandMap := commandMap
+	oldAuditLogger := auditLogger
+	oldMax := MaxStokesPerLine
+	t.Cleanup(func() {
+		sessionMap = oldSessionMap
+		commandMap = oldCommandMap
+		auditLogger = oldAuditLogger
+		MaxStokesPerLine = oldMax
+	})
+
+	sessionMap = map[string]sessionInfo{}
+	commandMap = map[string][]byte{}
+	MaxStokesPerLine = 2000
+	var output bytes.Buffer
+	auditLogger = zerolog.New(&output)
+
+	const id = "nul-session"
+	registerSession(id, "mallory", "default", "shell", "app", "192.0.2.1")
+	storeOrFlush(asyncAudit{ctxid: id, ascii: []byte("id\x00whoami\r")})
+
+	cmds := auditCommands(t, &output)
+	if len(cmds) != 1 {
+		t.Fatalf("expected exactly one command record, got %v", cmds)
+	}
+	if !strings.Contains(cmds[0], "id\x00whoami") {
+		t.Fatalf("NUL byte must be preserved in the audit record, got %q", cmds[0])
+	}
+}

@@ -6,8 +6,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
-	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -382,11 +380,9 @@ func (t *TCPLogger) emitStdinAudit(stdin []byte) {
 }
 
 func (t *TCPLogger) logTraceStroke(payload []byte) {
-	stroke, err := hex.DecodeString(fmt.Sprintf("%x", payload))
-	if err != nil {
-		SysLogger.Error().Err(err).Msg("failed to parse payload")
-		return
-	}
+	// NUL bytes are preserved: zerolog JSON-escapes them safely, and
+	// record-oriented consumers (xargs -0, scripts) treat them as meaningful,
+	// so the audit trail must reflect the bytes that were actually delivered.
 	auditLogger.Trace().
 		Str("user", t.info.User).
 		Str("session", t.ctxid).
@@ -394,7 +390,6 @@ func (t *TCPLogger) logTraceStroke(payload []byte) {
 		Str("pod", t.info.Pod).
 		Str("container", t.info.Container).
 		Str("client_ip", t.info.ClientIP).
-		// tty payload has nul bytes strip for trace log
-		Str("stroke", strings.ReplaceAll(string(stroke), "\u0000", "")).
+		Str("stroke", string(payload)).
 		Msg("")
 }
