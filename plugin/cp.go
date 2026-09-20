@@ -340,7 +340,9 @@ func (o *CopyOptions) handleExecError(execErr error, stderrStr string, src *file
 	}
 
 	if stderrStr != "" {
-		return fmt.Errorf("pod %s: %s", podRef, strings.TrimSpace(stderrStr))
+		// stderr is pod-controlled: strip control characters so a workload
+		// cannot inject terminal escape sequences into the printed error.
+		return fmt.Errorf("pod %s: %s", podRef, strings.TrimSpace(sanitizeTerminal(stderrStr)))
 	}
 
 	return fmt.Errorf("pod %s: command failed: %v", podRef, execErr)

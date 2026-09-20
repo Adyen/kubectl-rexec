@@ -7,6 +7,7 @@ package plugin
 import (
 	"archive/tar"
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,4 +160,41 @@ func TestRegressionCpResourceLimits(t *testing.T) {
 			t.Fatal("oversized entry must not be written")
 		}
 	})
+}
+
+// Pod-controlled strings (tar entry names, link targets, stderr) reach the
+// user's terminal via warnings and errors; control characters must be
+// stripped so a workload cannot inject escape sequences.
+func TestRegressionCpTerminalSanitization(t *testing.T) {
+	if got := sanitizeTerminal("\x1b[2J\x1b[Hrm -rf\x07\nok"); got != "[2J[Hrm -rf\nok" {
+		t.Fatalf("sanitizeTerminal = %q", got)
+	}
+
+	// tar entry warnings carry pod-controlled names
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "d/\x1b[31mred", Linkname: "\x1b]8;;http://evil\x07", Mode: 0777, Typeflag: tar.TypeSymlink}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var errOut bytes.Buffer
+	o := &CopyOptions{IOStreams: genericiooptions.IOStreams{ErrOut: &errOut}}
+	if err := o.extractTar(&buf, t.TempDir(), "d"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(errOut.String(), "\x1b\x07") {
+		t.Fatalf("warning contains control characters: %q", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "skipping symlink") {
+		t.Fatalf("expected symlink warning, got %q", errOut.String())
+	}
+
+	// stderr embedded in errors is sanitized
+	o = &CopyOptions{}
+	err := o.handleExecError(errors.New("stream failed"), "boom\x1b[2J\n", &fileSpec{PodName: "p", PodNamespace: "ns", File: "/f"})
+	if err == nil || strings.ContainsAny(err.Error(), "\x1b") {
+		t.Fatalf("error must not contain escape characters, got %v", err)
+	}
 }
