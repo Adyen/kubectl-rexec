@@ -16,11 +16,19 @@ See the [Getting started](https://github.com/Adyen/kubectl-rexec/blob/main/START
 See the [Getting started](https://github.com/Adyen/kubectl-rexec/blob/main/STARTED.md) guide.
 
 ## Testing
-Tests are currently implemented for the rexec/server
+Run the unit and regression tests:
 
-Run the tests like:
-`go test ./rexec/server`
-`go test ./plugin`
+```sh
+go test ./...
+```
+
+Run the complete exec contract suite in a disposable Kind cluster:
+
+```sh
+./scripts/e2e.sh
+```
+
+CI runs that suite against the oldest and newest supported Kubernetes versions. See [TESTING.md](TESTING.md) for the covered behavior and local prerequisites.
 
 ## Documentation
 See the [Design](https://github.com/Adyen/kubectl-rexec/blob/main/DESIGN.md).

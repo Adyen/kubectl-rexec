@@ -3,6 +3,7 @@ module github.com/adyen/kubectl-rexec
 go 1.26.6
 
 require (
+	github.com/creack/pty v1.1.18
 	github.com/cyphar/filepath-securejoin v0.7.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0

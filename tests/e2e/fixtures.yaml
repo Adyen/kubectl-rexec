@@ -1,0 +1,201 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __NAMESPACE__
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __OTHER_NAMESPACE__
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __POD__
+  namespace: __NAMESPACE__
+  labels:
+    app: rexec-e2e-running
+  annotations:
+    kubectl.kubernetes.io/default-container: primary
+spec:
+  restartPolicy: Never
+  containers:
+  - name: primary
+    image: __TEST_IMAGE__
+    imagePullPolicy: IfNotPresent
+    command: [sleep, infinity]
+    env:
+    - name: REXEC_CONTAINER
+      value: primary
+  - name: secondary
+    image: __TEST_IMAGE__
+    imagePullPolicy: IfNotPresent
+    command: [sleep, infinity]
+    env:
+    - name: REXEC_CONTAINER
+      value: secondary
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __UNANNOTATED_POD__
+  namespace: __NAMESPACE__
+  labels:
+    app: rexec-e2e-running
+spec:
+  restartPolicy: Never
+  containers:
+  - name: primary
+    image: __TEST_IMAGE__
+    imagePullPolicy: IfNotPresent
+    command: [sleep, infinity]
+    env:
+    - name: REXEC_CONTAINER
+      value: primary
+  - name: secondary
+    image: __TEST_IMAGE__
+    imagePullPolicy: IfNotPresent
+    command: [sleep, infinity]
+    env:
+    - name: REXEC_CONTAINER
+      value: secondary
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: namespace-target
+  namespace: __OTHER_NAMESPACE__
+  labels:
+    app: rexec-e2e-running
+spec:
+  restartPolicy: Never
+  containers:
+  - name: primary
+    image: __TEST_IMAGE__
+    imagePullPolicy: IfNotPresent
+    command: [sleep, infinity]
+    env:
+    - name: REXEC_CONTAINER
+      value: other-namespace
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resource-target
+  namespace: __NAMESPACE__
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rexec-e2e-resource
+  template:
+    metadata:
+      labels:
+        app: rexec-e2e-resource
+    spec:
+      containers:
+      - name: primary
+        image: __TEST_IMAGE__
+        imagePullPolicy: IfNotPresent
+        command: [sleep, infinity]
+        env:
+        - name: REXEC_CONTAINER
+          value: resource
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: resource-target
+  namespace: __NAMESPACE__
+spec:
+  selector:
+    app: rexec-e2e-resource
+  ports:
+  - name: placeholder
+    port: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pending-target
+  namespace: __NAMESPACE__
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: rexec-e2e-pending
+  template:
+    metadata:
+      labels:
+        app: rexec-e2e-pending
+    spec:
+      containers:
+      - name: primary
+        image: __TEST_IMAGE__
+        imagePullPolicy: IfNotPresent
+        command: [sleep, infinity]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: completed-target
+  namespace: __NAMESPACE__
+spec:
+  restartPolicy: Never
+  containers:
+  - name: primary
+    image: __TEST_IMAGE__
+    imagePullPolicy: IfNotPresent
+    command: [sh, -c, "exit 0"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rexec-e2e-read-api
+rules:
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [get, list]
+- apiGroups: [audit.adyen.internal]
+  resources: [pods/exec]
+  verbs: [create, get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rexec-e2e-denied-read-api
+  namespace: __NAMESPACE__
+subjects:
+- kind: User
+  name: rexec-e2e-denied
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: rexec-e2e-read-api
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rexec-e2e-exec
+rules:
+- apiGroups: [""]
+  resources: [pods, pods/exec]
+  verbs: [get, list, create]
+- apiGroups: [audit.adyen.internal]
+  resources: [pods/exec]
+  verbs: [create, get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rexec-e2e-exec
+  namespace: __NAMESPACE__
+subjects:
+- kind: Group
+  name: rexec-e2e-exec
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: rexec-e2e-exec
+  apiGroup: rbac.authorization.k8s.io
