@@ -151,7 +151,17 @@ func TestExecOneOffStreamsArgumentsAndExitStatus(t *testing.T) {
 
 func TestExecTargets(t *testing.T) {
 	env := loadEnvironment(t)
+	testExecContainerTargets(t, env)
+	testExecQuiet(t, env)
+	testExecResourceTargets(t, env)
+	testExecFilename(t, env)
+	testExecNamespace(t, env)
+	testExecUnavailableTargets(t, env)
+	testExecMissingTargets(t, env)
+}
 
+func testExecContainerTargets(t *testing.T, env environment) {
+	t.Helper()
 	t.Run("default container annotation", func(t *testing.T) {
 		result := env.runRexec(t, "", nil,
 			"exec", env.pod, "-n", env.namespace, "--", "printenv", "REXEC_CONTAINER",
@@ -172,7 +182,10 @@ func TestExecTargets(t *testing.T) {
 			t.Errorf("stdout = %q, want secondary container", result.stdout)
 		}
 	})
+}
 
+func testExecQuiet(t *testing.T, env environment) {
+	t.Helper()
 	t.Run("quiet", func(t *testing.T) {
 		normal := env.runRexec(t, "", nil,
 			"exec", env.unannotated, "-n", env.namespace, "--", "printenv", "REXEC_CONTAINER",
@@ -194,7 +207,10 @@ func TestExecTargets(t *testing.T) {
 			t.Errorf("quiet stdout = %q, want remote output", quiet.stdout)
 		}
 	})
+}
 
+func testExecResourceTargets(t *testing.T, env environment) {
+	t.Helper()
 	t.Run("resource name", func(t *testing.T) {
 		result := env.runRexec(t, "", nil,
 			"exec", "deployment/resource-target", "-n", env.namespace, "--",
@@ -216,7 +232,10 @@ func TestExecTargets(t *testing.T) {
 			t.Errorf("stdout = %q, want service-selected pod output", result.stdout)
 		}
 	})
+}
 
+func testExecFilename(t *testing.T, env environment) {
+	t.Helper()
 	t.Run("filename", func(t *testing.T) {
 		manifest := filepath.Join(t.TempDir(), "pod.yaml")
 		content := fmt.Sprintf("apiVersion: v1\nkind: Pod\nmetadata:\n  name: %s\n  namespace: %s\n", env.pod, env.namespace)
@@ -233,7 +252,10 @@ func TestExecTargets(t *testing.T) {
 			t.Errorf("stdout = %q, want manifest-selected pod output", result.stdout)
 		}
 	})
+}
 
+func testExecNamespace(t *testing.T, env environment) {
+	t.Helper()
 	t.Run("namespace", func(t *testing.T) {
 		result := env.runRexec(t, "", nil,
 			"exec", "namespace-target", "-n", env.otherNS, "--",
@@ -244,7 +266,10 @@ func TestExecTargets(t *testing.T) {
 			t.Errorf("stdout = %q, want namespace-selected pod output", result.stdout)
 		}
 	})
+}
 
+func testExecUnavailableTargets(t *testing.T, env environment) {
+	t.Helper()
 	t.Run("pod running timeout", func(t *testing.T) {
 		result := env.runRexec(t, "", nil,
 			"exec", "deployment/pending-target", "-n", env.namespace,
@@ -269,7 +294,10 @@ func TestExecTargets(t *testing.T) {
 			t.Errorf("stderr = %q, want completed-pod error", result.stderr)
 		}
 	})
+}
 
+func testExecMissingTargets(t *testing.T, env environment) {
+	t.Helper()
 	t.Run("missing pod", func(t *testing.T) {
 		result := env.runRexec(t, "", nil,
 			"exec", "missing-pod", "-n", env.namespace, "--", "true",

@@ -106,7 +106,7 @@ sed \
   -e "s#__OTHER_NAMESPACE__#${OTHER_NAMESPACE}#g" \
   -e "s#__POD__#${POD}#g" \
   -e "s#__UNANNOTATED_POD__#${UNANNOTATED_POD}#g" \
-  -e "s#__TEST_IMAGE__#${TEST_IMAGE}#g" \
+  -e "s#busybox:1.36.1#${TEST_IMAGE}#g" \
   "${REPO_ROOT}/tests/e2e/fixtures.yaml" > "${FIXTURE_MANIFEST}"
 kubectl --context "${KUBE_CONTEXT}" apply -f "${FIXTURE_MANIFEST}"
 rm -f "${FIXTURE_MANIFEST}"

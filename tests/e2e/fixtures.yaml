@@ -22,7 +22,7 @@ spec:
   restartPolicy: Never
   containers:
   - name: primary
-    image: __TEST_IMAGE__
+    image: busybox:1.36.1
     imagePullPolicy: IfNotPresent
     command: [sleep, infinity]
     env:
@@ -30,11 +30,13 @@ spec:
       value: primary
     resources:
       requests:
+        cpu: 5m
+        ephemeral-storage: 1Mi
         memory: 4Mi
       limits:
         memory: 32Mi
   - name: secondary
-    image: __TEST_IMAGE__
+    image: busybox:1.36.1
     imagePullPolicy: IfNotPresent
     command: [sleep, infinity]
     env:
@@ -42,6 +44,8 @@ spec:
       value: secondary
     resources:
       requests:
+        cpu: 5m
+        ephemeral-storage: 1Mi
         memory: 4Mi
       limits:
         memory: 32Mi
@@ -58,7 +62,7 @@ spec:
   restartPolicy: Never
   containers:
   - name: primary
-    image: __TEST_IMAGE__
+    image: busybox:1.36.1
     imagePullPolicy: IfNotPresent
     command: [sleep, infinity]
     env:
@@ -66,11 +70,13 @@ spec:
       value: primary
     resources:
       requests:
+        cpu: 5m
+        ephemeral-storage: 1Mi
         memory: 4Mi
       limits:
         memory: 32Mi
   - name: secondary
-    image: __TEST_IMAGE__
+    image: busybox:1.36.1
     imagePullPolicy: IfNotPresent
     command: [sleep, infinity]
     env:
@@ -78,6 +84,8 @@ spec:
       value: secondary
     resources:
       requests:
+        cpu: 5m
+        ephemeral-storage: 1Mi
         memory: 4Mi
       limits:
         memory: 32Mi
@@ -94,7 +102,7 @@ spec:
   restartPolicy: Never
   containers:
   - name: primary
-    image: __TEST_IMAGE__
+    image: busybox:1.36.1
     imagePullPolicy: IfNotPresent
     command: [sleep, infinity]
     env:
@@ -102,6 +110,8 @@ spec:
       value: other-namespace
     resources:
       requests:
+        cpu: 5m
+        ephemeral-storage: 1Mi
         memory: 4Mi
       limits:
         memory: 32Mi
@@ -124,7 +134,7 @@ spec:
       automountServiceAccountToken: false
       containers:
       - name: primary
-        image: __TEST_IMAGE__
+        image: busybox:1.36.1
         imagePullPolicy: IfNotPresent
         command: [sleep, infinity]
         env:
@@ -132,6 +142,8 @@ spec:
           value: resource
         resources:
           requests:
+            cpu: 5m
+            ephemeral-storage: 1Mi
             memory: 4Mi
           limits:
             memory: 32Mi
@@ -166,11 +178,13 @@ spec:
       automountServiceAccountToken: false
       containers:
       - name: primary
-        image: __TEST_IMAGE__
+        image: busybox:1.36.1
         imagePullPolicy: IfNotPresent
         command: [sleep, infinity]
         resources:
           requests:
+            cpu: 5m
+            ephemeral-storage: 1Mi
             memory: 4Mi
           limits:
             memory: 32Mi
@@ -185,11 +199,13 @@ spec:
   restartPolicy: Never
   containers:
   - name: primary
-    image: __TEST_IMAGE__
+    image: busybox:1.36.1
     imagePullPolicy: IfNotPresent
     command: [sh, -c, "exit 0"]
     resources:
       requests:
+        cpu: 5m
+        ephemeral-storage: 1Mi
         memory: 4Mi
       limits:
         memory: 32Mi
