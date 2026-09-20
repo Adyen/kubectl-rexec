@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -375,20 +376,28 @@ func canPass(rv admissionv1.AdmissionReview) bool {
 	return false
 }
 
+// getIP returns the client IP for audit attribution. The only way in is via
+// the kube-apiserver aggregator (a verified front-proxy client certificate is
+// required), and proxies append the peer IP they observe to X-Forwarded-For —
+// so the LAST XFF entry is the client IP the aggregator actually saw. All
+// earlier entries come from the client and are trivially spoofed, as is
+// X-Real-IP (nothing trustworthy sets it here); both are ignored.
 func getIP(r *http.Request) string {
-	// 1. Try X-Forwarded-For (can be a comma-separated list)
-	clientIP := r.Header.Get("X-Forwarded-For")
-
-	// 2. Fallback to X-Real-IP
-	if clientIP == "" {
-		clientIP = r.Header.Get("X-Real-IP")
+	var last string
+	for _, header := range r.Header.Values("X-Forwarded-For") {
+		for _, part := range strings.Split(header, ",") {
+			if ip := strings.TrimSpace(part); ip != "" {
+				last = ip
+			}
+		}
 	}
-
-	// 3. Last resort: The direct connection IP
-	if clientIP == "" {
-		clientIP = r.RemoteAddr
+	if last != "" {
+		return last
 	}
-	return clientIP
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 // isTruthy mirrors the kube-apiserver's boolean query decoding

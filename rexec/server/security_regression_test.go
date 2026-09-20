@@ -488,3 +488,38 @@ func TestRegressionNULBytesPreservedInAudit(t *testing.T) {
 		t.Fatalf("NUL byte must be preserved in the audit record, got %q", cmds[0])
 	}
 }
+
+// Client IP attribution: requests only arrive via the kube-apiserver
+// aggregator, which appends the peer IP it observes to X-Forwarded-For.
+// The last entry is authoritative; earlier ones (and X-Real-IP) are
+// client-supplied and must not be trusted.
+func TestRegressionGetIPUsesAggregatorAppendedXFF(t *testing.T) {
+	cases := []struct {
+		name       string
+		xff        []string
+		realIP     string
+		remoteAddr string
+		want       string
+	}{
+		{"aggregator appended after spoofed entries", []string{"198.51.100.7, 203.0.113.9"}, "", "10.244.0.1:54468", "203.0.113.9"},
+		{"multiple XFF headers", []string{"198.51.100.7", "203.0.113.9"}, "", "10.244.0.1:54468", "203.0.113.9"},
+		{"whitespace trimmed", []string{"  203.0.113.9  "}, "", "10.244.0.1:54468", "203.0.113.9"},
+		{"no XFF falls back to remote addr host", nil, "", "10.244.0.1:54468", "10.244.0.1"},
+		{"X-Real-IP ignored", nil, "198.51.100.7", "10.244.0.1:54468", "10.244.0.1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.RemoteAddr = tc.remoteAddr
+			for _, v := range tc.xff {
+				req.Header.Add("X-Forwarded-For", v)
+			}
+			if tc.realIP != "" {
+				req.Header.Set("X-Real-IP", tc.realIP)
+			}
+			if got := getIP(req); got != tc.want {
+				t.Fatalf("getIP = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
