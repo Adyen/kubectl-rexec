@@ -479,7 +479,7 @@ func TestProcessTarEntry(t *testing.T) {
 
 func testProcessTarEntryScenario(t *testing.T, o *CopyOptions, header *tar.Header, tarReader *tar.Reader, targetPath string, content []byte, wantErr bool) {
 	t.Helper()
-	err := o.processTarEntry(header, tarReader, targetPath)
+	err := o.processTarEntry(header, tarReader, filepath.Dir(targetPath), filepath.Base(targetPath))
 	if (err != nil) != wantErr {
 		t.Errorf("processTarEntry() error = %v, wantErr %v", err, wantErr)
 	}
@@ -532,7 +532,7 @@ func TestProcessTarEntryUnsupportedTypes(t *testing.T) {
 			tarReader := createTarReader(t, tt.header, nil)
 			targetPath := filepath.Join(tmpDir, tt.header.Name)
 
-			err := o.processTarEntry(tt.header, tarReader, targetPath)
+			err := o.processTarEntry(tt.header, tarReader, filepath.Dir(targetPath), filepath.Base(targetPath))
 			if err != nil {
 				t.Errorf("processTarEntry() should not error for unsupported type, got: %v", err)
 			}

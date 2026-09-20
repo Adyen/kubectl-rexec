@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	securejoin "github.com/cyphar/filepath-securejoin"
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,6 +42,22 @@ type fileSpec struct {
 }
 
 const errPathTraversal = "illegal file path in tar: %s (path traversal attempt)"
+
+// sanitizeTerminal strips control characters from pod-controlled strings
+// before they reach the user's terminal, so a workload cannot inject escape
+// sequences (cursor movement, color bombs, OSC clipboard, ...) into cp
+// warnings or error messages.
+func sanitizeTerminal(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
 
 // NewCmdCp creates a new 'cp' command for the rexec plugin.
 // It supports copying files and directories from containers to the local filesystem with auditing.
@@ -316,9 +333,13 @@ func (o *CopyOptions) extractTar(reader io.Reader, destPath, srcBase string) err
 		if err != nil {
 			return err
 		}
+		relTarget, err := filepath.Rel(baseAbs, targetAbs)
+		if err != nil {
+			return fmt.Errorf(errPathTraversal, header.Name)
+		}
 
 		// Delegated the actual file creation to reduce cognitive complexity
-		if err := o.processTarEntry(header, tarReader, targetAbs); err != nil {
+		if err := o.processTarEntry(header, tarReader, baseAbs, relTarget); err != nil {
 			return err
 		}
 	}
@@ -326,17 +347,37 @@ func (o *CopyOptions) extractTar(reader io.Reader, destPath, srcBase string) err
 }
 
 // processTarEntry handles the creation of directories, files, or skipping symlinks based on the tar header type.
-func (o *CopyOptions) processTarEntry(header *tar.Header, tarReader *tar.Reader, targetAbs string) error {
+// Every target is resolved with securejoin against root first, so symlinked
+// path components under the destination (planted by another local actor)
+// cannot redirect writes outside of root. Residual note: SecureJoin resolves
+// lexically, so a local process racing a symlink swap between resolution and
+// open could still win a TOCTOU window; such a process could already write
+// the user's files directly, so this is accepted.
+func (o *CopyOptions) processTarEntry(header *tar.Header, tarReader *tar.Reader, root, rel string) error {
 	switch header.Typeflag {
 	case tar.TypeDir:
-		if err := os.MkdirAll(targetAbs, os.FileMode(header.Mode)); err != nil {
+		resolved, err := securejoin.SecureJoin(root, rel)
+		if err != nil {
+			return fmt.Errorf("mkdir failed: %v", err)
+		}
+		if err := os.MkdirAll(resolved, os.FileMode(header.Mode)); err != nil {
 			return fmt.Errorf("mkdir failed: %v", err)
 		}
 	case tar.TypeReg:
-		if err := os.MkdirAll(filepath.Dir(targetAbs), 0755); err != nil {
-			return fmt.Errorf("mkdir failed: %v", err)
+		if dir := filepath.Dir(rel); dir != "." {
+			resolvedDir, err := securejoin.SecureJoin(root, dir)
+			if err != nil {
+				return fmt.Errorf("mkdir failed: %v", err)
+			}
+			if err := os.MkdirAll(resolvedDir, 0755); err != nil {
+				return fmt.Errorf("mkdir failed: %v", err)
+			}
 		}
-		f, err := os.OpenFile(targetAbs, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+		resolved, err := securejoin.SecureJoin(root, rel)
+		if err != nil {
+			return fmt.Errorf("create file failed: %v", err)
+		}
+		f, err := os.OpenFile(resolved, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
 		if err != nil {
 			return fmt.Errorf("create file failed: %v", err)
 		}
@@ -349,13 +390,13 @@ func (o *CopyOptions) processTarEntry(header *tar.Header, tarReader *tar.Reader,
 		}
 	case tar.TypeSymlink:
 		//nolint:errcheck
-		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping symlink %s -> %s (symlinks not supported for security)\n", header.Name, header.Linkname)
+		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping symlink %s -> %s (symlinks not supported for security)\n", sanitizeTerminal(header.Name), sanitizeTerminal(header.Linkname))
 	case tar.TypeLink:
 		//nolint:errcheck
-		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping hard link %s -> %s (hard links not supported for security)\n", header.Name, header.Linkname)
+		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping hard link %s -> %s (hard links not supported for security)\n", sanitizeTerminal(header.Name), sanitizeTerminal(header.Linkname))
 	default:
 		//nolint:errcheck
-		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping unsupported tar entry %s (type %d)\n", header.Name, header.Typeflag)
+		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping unsupported tar entry %s (type %d)\n", sanitizeTerminal(header.Name), header.Typeflag)
 	}
 	return nil
 }
