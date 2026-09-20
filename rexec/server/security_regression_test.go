@@ -9,6 +9,8 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"net/http"
@@ -18,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
+	"github.com/rs/zerolog"
 )
 
 // maskedFrame builds a client WebSocket frame with explicit FIN/opcode control.
@@ -394,5 +397,60 @@ func TestRegressionExecHandlerRejectsOversizedBody(t *testing.T) {
 
 	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
+// auditCommands decodes the command records an auditLogger wrote to buf.
+func auditCommands(t *testing.T, buf *bytes.Buffer) []string {
+	t.Helper()
+	var cmds []string
+	decoder := json.NewDecoder(buf)
+	for {
+		var rec map[string]any
+		if err := decoder.Decode(&rec); errors.Is(err, io.EOF) {
+			return cmds
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if cmd, ok := rec["command"].(string); ok {
+			cmds = append(cmds, cmd)
+		}
+	}
+}
+
+// A trailing command without a line terminator is still executed by shells
+// when stdin hits EOF, so it must be flushed into the audit at session end
+// instead of being discarded with the session's line buffer.
+func TestRegressionUnterminatedCommandFlushedAtSessionEnd(t *testing.T) {
+	oldSessionMap := sessionMap
+	oldCommandMap := commandMap
+	oldAuditLogger := auditLogger
+	oldMax := MaxStokesPerLine
+	t.Cleanup(func() {
+		sessionMap = oldSessionMap
+		commandMap = oldCommandMap
+		auditLogger = oldAuditLogger
+		MaxStokesPerLine = oldMax
+	})
+
+	sessionMap = map[string]sessionInfo{}
+	commandMap = map[string][]byte{}
+	MaxStokesPerLine = 2000 // production default
+	var output bytes.Buffer
+	auditLogger = zerolog.New(&output)
+
+	const id = "eof-session"
+	registerSession(id, "mallory", "default", "shell", "app", "192.0.2.1")
+	storeOrFlush(asyncAudit{ctxid: id, ascii: []byte("touch /tmp/stealth")}) // no trailing CR/LF
+	endSession(id)
+
+	found := false
+	for _, cmd := range auditCommands(t, &output) {
+		if strings.Contains(cmd, "touch /tmp/stealth") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("unterminated final command must be flushed to the command audit at session end")
 	}
 }

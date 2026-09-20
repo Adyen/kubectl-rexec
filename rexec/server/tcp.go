@@ -81,9 +81,16 @@ func endSession(ctxid string) {
 	delete(sessionMap, ctxid)
 	mapSync.Unlock()
 
+	// Flush a trailing command that never saw a line terminator: shells
+	// execute it when the session's stdin hits EOF, so discarding it here
+	// would leave the last command of a session unaudited.
 	commandSync.Lock()
+	remaining := commandMap[ctxid]
 	delete(commandMap, ctxid)
 	commandSync.Unlock()
+	if ok && len(remaining) > 0 {
+		logCommand(string(remaining), info.User, ctxid, info.NameSpace, info.Pod, info.Container, info.ClientIP)
+	}
 
 	if ok {
 		logSessionEvent("session_end", info.User, ctxid, info.NameSpace, info.Pod, info.Container, info.ClientIP)
