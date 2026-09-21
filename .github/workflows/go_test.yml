@@ -23,11 +23,8 @@ jobs:
           go-version: ${{ matrix.go-version }}
           cache: true
 
-      - name: Install dependencies
-        run: go get .
-
       - name: Build
-        run: go build -v ./...
+        run: go build -mod=readonly -v ./...
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
@@ -37,7 +34,7 @@ jobs:
           args: --timeout=5m --disable=staticcheck
 
       - name: Run tests
-        run: go test -json -v -race -count=1 ./... > TestResults-${{ matrix.go-version }}.json
+        run: go test -mod=readonly -json -v -race -count=1 ./... > TestResults-${{ matrix.go-version }}.json
 
       - name: Upload Go test results
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
