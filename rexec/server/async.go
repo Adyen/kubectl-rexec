@@ -20,8 +20,6 @@ func storeOrFlush(audit asyncAudit) {
 
 	for _, ascii := range audit.ascii {
 		switch ascii {
-		case 0:
-			// nothing
 		case 8, 127:
 			commandSync.Lock()
 			if len(commandMap[audit.ctxid]) > 0 {

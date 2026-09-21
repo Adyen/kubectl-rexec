@@ -14,21 +14,21 @@ import (
 )
 
 const (
-	testTempPattern = "test-*"
-	targetTxtFile   = "target.txt"
-	tmpFooPath      = "/tmp/foo"
-	errExtractTar   = "extractTar error: %v"
-	myFileTxt       = "myfile.txt"
-	content1Str     = "content1\n"
-	content2Str     = "content2\n"
-	contentStr      = "content\n"
-	localPath       = "/local"
-	fileDotTxt      = "file..txt"
-	testDirName     = "testdir"
-	maliciousPath1  = "../etc/passwd"
-	maliciousPath2  = "/etc/passwd"
-	maliciousPath3  = ".."
-	traversalErrorMsg = "illegal file path"
+	testTempPattern          = "test-*"
+	targetTxtFile            = "target.txt"
+	tmpFooPath               = "/tmp/foo"
+	errExtractTar            = "extractTar error: %v"
+	myFileTxt                = "myfile.txt"
+	content1Str              = "content1\n"
+	content2Str              = "content2\n"
+	contentStr               = "content\n"
+	localPath                = "/local"
+	fileDotTxt               = "file..txt"
+	testDirName              = "testdir"
+	maliciousPath1           = "../etc/passwd"
+	maliciousPath2           = "/etc/passwd"
+	maliciousPath3           = ".."
+	traversalErrorMsg        = "illegal file path"
 	errWriteTarHeaderFmt     = "failed to write tar header: %v"
 	errWriteTarContentFmt    = "failed to write tar content: %v"
 	errCloseTarWriterFmt     = "failed to close tar writer: %v"
@@ -479,7 +479,7 @@ func TestProcessTarEntry(t *testing.T) {
 
 func testProcessTarEntryScenario(t *testing.T, o *CopyOptions, header *tar.Header, tarReader *tar.Reader, targetPath string, content []byte, wantErr bool) {
 	t.Helper()
-	err := o.processTarEntry(header, tarReader, targetPath)
+	err := o.processTarEntry(header, tarReader, filepath.Dir(targetPath), filepath.Base(targetPath))
 	if (err != nil) != wantErr {
 		t.Errorf("processTarEntry() error = %v, wantErr %v", err, wantErr)
 	}
@@ -532,7 +532,7 @@ func TestProcessTarEntryUnsupportedTypes(t *testing.T) {
 			tarReader := createTarReader(t, tt.header, nil)
 			targetPath := filepath.Join(tmpDir, tt.header.Name)
 
-			err := o.processTarEntry(tt.header, tarReader, targetPath)
+			err := o.processTarEntry(tt.header, tarReader, filepath.Dir(targetPath), filepath.Base(targetPath))
 			if err != nil {
 				t.Errorf("processTarEntry() should not error for unsupported type, got: %v", err)
 			}

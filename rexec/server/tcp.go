@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/hex"
-	"fmt"
+	"encoding/base64"
+	"encoding/binary"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/rs/zerolog"
 )
@@ -78,24 +79,68 @@ func endSession(ctxid string) {
 	delete(sessionMap, ctxid)
 	mapSync.Unlock()
 
+	// Flush a trailing command that never saw a line terminator: shells
+	// execute it when the session's stdin hits EOF, so discarding it here
+	// would leave the last command of a session unaudited.
 	commandSync.Lock()
+	remaining := commandMap[ctxid]
 	delete(commandMap, ctxid)
 	commandSync.Unlock()
+	if ok && len(remaining) > 0 {
+		logCommand(string(remaining), info.User, ctxid, info.NameSpace, info.Pod, info.Container, info.ClientIP)
+	}
 
 	if ok {
 		logSessionEvent("session_end", info.User, ctxid, info.NameSpace, info.Pod, info.Container, info.ClientIP)
 	}
 }
 
-// tcplogger is on client to apiserver websocket direction
-// write path is audited read path is pass through only
+// wsCodec describes how stdin is encoded on the wire for the negotiated
+// Kubernetes WebSocket subprotocol.
+type wsCodec int32
+
+const (
+	// codecUnknown means the 101 response has not been observed yet; payloads
+	// are then interpreted under both raw and base64 rules (they cannot be
+	// confused: raw channel 0 is 0x00, base64 channel 0 is ASCII '0').
+	codecUnknown wsCodec = iota
+	// codecRaw is used by "v4.channel.k8s.io", "v5.channel.k8s.io",
+	// "channel.k8s.io" and the empty protocol: every message is prefixed with
+	// a raw channel byte.
+	codecRaw
+	// codecBase64 is used by "base64.channel.k8s.io" and
+	// "v4.base64.channel.k8s.io": every message is prefixed with an ASCII
+	// channel digit and the data is base64-encoded.
+	codecBase64
+)
+
+// maxFrameBuf bounds the buffered bytes of a single incomplete WebSocket
+// frame. Legitimate stdin frames are a handful of bytes; this only guards
+// against a hostile or broken peer declaring a giant payload.
+const maxFrameBuf = 32 << 20 // 32 MiB
+
+// maxUpgradeResponseHead bounds the buffered bytes while looking for the end
+// of the upstream 101 response headers.
+const maxUpgradeResponseHead = 16 << 10 // 16 KiB
+
+// tcplogger is on client to apiserver websocket direction.
+// The write path (client -> apiserver) is audited; the read path is tapped only
+// until the negotiated subprotocol is learned from the 101 response, then it is
+// a pure pass-through.
 type TCPLogger struct {
 	net.Conn
-	ctxid         string
-	info          sessionInfo
-	auditSync     sync.Mutex
+	ctxid string
+	info  sessionInfo
+
+	auditSync     sync.Mutex // guards websocketOpen, headerTail, frameBuf
 	websocketOpen bool
 	headerTail    []byte
+	frameBuf      []byte
+
+	respMu   sync.Mutex // guards respTail
+	respTail []byte
+	respDone atomic.Bool
+	codec    atomic.Int32
 }
 
 func (t *TCPLogger) Write(b []byte) (n int, err error) {
@@ -106,6 +151,65 @@ func (t *TCPLogger) Write(b []byte) (n int, err error) {
 	return n, err
 }
 
+// Read taps the upstream -> client direction until the end of the 101 upgrade
+// response, so the negotiated subprotocol is known when auditing client frames.
+// The bytes themselves are passed through untouched.
+func (t *TCPLogger) Read(p []byte) (int, error) {
+	n, err := t.Conn.Read(p)
+	if n > 0 && !t.respDone.Load() {
+		t.observeUpgradeResponse(p[:n])
+	}
+	return n, err
+}
+
+// observeUpgradeResponse buffers response bytes until the header terminator and
+// records the negotiated subprotocol from it.
+func (t *TCPLogger) observeUpgradeResponse(b []byte) {
+	t.respMu.Lock()
+	defer t.respMu.Unlock()
+
+	combined := append(t.respTail, b...)
+	if idx := bytes.Index(combined, []byte("\r\n\r\n")); idx >= 0 {
+		t.codec.Store(int32(codecForProtocol(headerValue(combined[:idx], "Sec-WebSocket-Protocol"))))
+		t.respTail = nil
+		t.respDone.Store(true)
+		return
+	}
+	if len(combined) > maxUpgradeResponseHead {
+		// give up sniffing; codecUnknown falls back to dual interpretation
+		t.respTail = nil
+		t.respDone.Store(true)
+		return
+	}
+	t.respTail = combined
+}
+
+// headerValue extracts a header value from a raw HTTP response head.
+func headerValue(head []byte, name string) string {
+	for _, line := range bytes.Split(head, []byte("\r\n")) {
+		k, v, ok := bytes.Cut(line, []byte(":"))
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(string(k)), name) {
+			return strings.TrimSpace(string(v))
+		}
+	}
+	return ""
+}
+
+// codecForProtocol maps a negotiated WebSocket subprotocol to its codec.
+// Unknown or absent protocols default to the raw channel-prefixed binary
+// encoding, matching the kubelet's treatment of the empty subprotocol.
+func codecForProtocol(protocol string) wsCodec {
+	switch protocol {
+	case "base64.channel.k8s.io", "v4.base64.channel.k8s.io":
+		return codecBase64
+	default:
+		return codecRaw
+	}
+}
+
 func (t *TCPLogger) auditClientBytes(data []byte) {
 	t.auditSync.Lock()
 	defer t.auditSync.Unlock()
@@ -114,7 +218,7 @@ func (t *TCPLogger) auditClientBytes(data []byte) {
 		data = t.consumeHTTPUpgrade(data)
 	}
 	if len(data) > 0 {
-		t.auditClientFrame(data)
+		t.bufferAndAuditFrames(data)
 	}
 }
 
@@ -142,41 +246,143 @@ func (t *TCPLogger) consumeHTTPUpgrade(data []byte) []byte {
 	return nil
 }
 
-func (t *TCPLogger) auditClientFrame(frameBytes []byte) {
-	// a single write operation may contain multiple combined frames. Continue
-	// parsing until the entire buffer has been processed to ensure no keystrokes
-	// are omitted from the audit log.
-	for len(frameBytes) > 0 {
-		parsed, consumed, err := parseWebSocketFrame(frameBytes)
-		if err != nil {
-			recordError("ws_parse")
-			SysLogger.Error().Err(err).Msg("failed to parse ws frame")
+// bufferAndAuditFrames appends freshly written bytes to the frame buffer and
+// audits every complete frame. An incomplete trailing frame is kept for the
+// next Write: the reverse proxy copies the stream in chunks (io.Copy with a
+// 32 KiB buffer, or however the peer paces its segments), so a frame spanning
+// multiple writes is normal and must not be dropped from the audit.
+func (t *TCPLogger) bufferAndAuditFrames(data []byte) {
+	t.frameBuf = append(t.frameBuf, data...)
+	for len(t.frameBuf) > 0 {
+		// Reject absurd declared lengths before parsing: an 8-byte length can
+		// overflow int64 downstream, and a peer promising an oversized frame
+		// would otherwise pin the buffer while the rest never arrives.
+		if declared, ok := declaredPayloadLength(t.frameBuf); ok && (declared < 0 || declared > maxFrameBuf) {
+			recordError("ws_frame_overflow")
+			SysLogger.Error().Int64("declared", declared).Msg("dropping oversized ws frame from audit buffer")
+			t.frameBuf = nil
 			return
 		}
-		frameBytes = frameBytes[consumed:]
-
-		// websocket opcodes we might see: 0x0 continuation 0x1 text 0x2 binary
-		// 0x8 close 0x9 ping 0xA pong
-		// Kubernetes prefixes each binary payload with its remotecommand stream
-		// channel. Only channel 0 is terminal stdin; channel 4 carries resize data.
-		if parsed.Opcode != 0x2 || len(parsed.Payload) < 2 || parsed.Payload[0] != 0 {
-			continue
+		parsed, consumed, err := parseWebSocketFrame(t.frameBuf)
+		if err != nil {
+			// All parse errors mean the frame is incomplete; wait for the
+			// rest of it instead of discarding the bytes.
+			if len(t.frameBuf) > maxFrameBuf {
+				recordError("ws_frame_overflow")
+				SysLogger.Error().Int("buffered", len(t.frameBuf)).Msg("dropping oversized incomplete ws frame from audit buffer")
+				t.frameBuf = nil
+			}
+			return
 		}
-		stdin := parsed.Payload[1:]
+		t.auditFrame(parsed)
+		t.frameBuf = t.frameBuf[consumed:]
+	}
+	t.frameBuf = nil
+}
 
-		if auditLogger.GetLevel() == zerolog.TraceLevel {
-			t.logTraceStroke(stdin)
+// declaredPayloadLength returns the payload length declared in the frame
+// header, and whether enough header bytes are buffered to know it.
+func declaredPayloadLength(buf []byte) (int64, bool) {
+	if len(buf) < 2 {
+		return 0, false
+	}
+	switch n := int64(buf[1] & 0x7F); n {
+	case 126:
+		if len(buf) < 4 {
+			return 0, false
 		}
-		asyncAuditChan <- asyncAudit{ctxid: t.ctxid, info: t.info, ascii: stdin}
+		return int64(binary.BigEndian.Uint16(buf[2:4])), true
+	case 127:
+		if len(buf) < 10 {
+			return 0, false
+		}
+		return int64(binary.BigEndian.Uint64(buf[2:10])), true
+	default:
+		return n, true
 	}
 }
 
-func (t *TCPLogger) logTraceStroke(payload []byte) {
-	stroke, err := hex.DecodeString(fmt.Sprintf("%x", payload))
-	if err != nil {
-		SysLogger.Error().Err(err).Msg("failed to parse payload")
+// auditFrame audits the stdin content of one complete frame.
+//
+// The kubelet's wsstream layer (x/net/websocket) delivers EVERY data-carrying
+// frame as an independent message: continuation frames are relabeled to the
+// preceding data opcode but are never reassembled, and the payload type is not
+// enforced (a text frame on a binary protocol is accepted). The first payload
+// byte of every such frame is therefore interpreted as the channel, exactly
+// like upstream does, regardless of the FIN bit. Auditing per frame with the
+// same rule means nothing that can reach container stdin escapes the audit.
+func (t *TCPLogger) auditFrame(parsed *webSocketFrame) {
+	switch parsed.Opcode {
+	case 0x0, 0x1, 0x2: // continuation, text, binary
+		t.auditChannelPayload(parsed.Payload)
+	default:
+		// 0x8 close, 0x9 ping, 0xA pong: no stdin content
+	}
+}
+
+func (t *TCPLogger) auditChannelPayload(payload []byte) {
+	if len(payload) < 2 {
 		return
 	}
+	switch wsCodec(t.codec.Load()) {
+	case codecRaw:
+		t.auditRawPayload(payload)
+	case codecBase64:
+		t.auditBase64Payload(payload)
+	default:
+		// The negotiated subprotocol is unknown (the 101 response was not
+		// observed). Both encodings are still unambiguous: raw stdin starts
+		// with a 0x00 channel byte, base64 stdin starts with ASCII '0' (0x30,
+		// which as a raw channel number exceeds the valid channel count and
+		// is discarded upstream).
+		if payload[0] == 0x00 {
+			t.auditRawPayload(payload)
+			return
+		}
+		t.auditBase64Payload(payload)
+	}
+}
+
+// auditRawPayload audits channel-0 data from a binary-codec payload.
+// Kubernetes prefixes each message with its remotecommand stream channel;
+// only channel 0 is terminal stdin (channel 4 carries resize data).
+func (t *TCPLogger) auditRawPayload(payload []byte) {
+	if payload[0] != 0x00 {
+		return
+	}
+	t.emitStdinAudit(payload[1:])
+}
+
+// auditBase64Payload audits channel-0 data from a base64-codec payload, where
+// the channel is the ASCII digit prefix and the data is base64-encoded.
+func (t *TCPLogger) auditBase64Payload(payload []byte) {
+	if payload[0] != '0' {
+		return
+	}
+	decoded := make([]byte, base64.StdEncoding.DecodedLen(len(payload)-1))
+	n, err := base64.StdEncoding.Decode(decoded, payload[1:])
+	if err != nil {
+		recordError("ws_base64")
+		SysLogger.Error().Err(err).Msg("failed to base64-decode ws stdin payload")
+		return
+	}
+	t.emitStdinAudit(decoded[:n])
+}
+
+func (t *TCPLogger) emitStdinAudit(stdin []byte) {
+	if len(stdin) == 0 {
+		return
+	}
+	if auditLogger.GetLevel() == zerolog.TraceLevel {
+		t.logTraceStroke(stdin)
+	}
+	asyncAuditChan <- asyncAudit{ctxid: t.ctxid, info: t.info, ascii: stdin}
+}
+
+func (t *TCPLogger) logTraceStroke(payload []byte) {
+	// NUL bytes are preserved: zerolog JSON-escapes them safely, and
+	// record-oriented consumers (xargs -0, scripts) treat them as meaningful,
+	// so the audit trail must reflect the bytes that were actually delivered.
 	auditLogger.Trace().
 		Str("user", t.info.User).
 		Str("session", t.ctxid).
@@ -184,7 +390,6 @@ func (t *TCPLogger) logTraceStroke(payload []byte) {
 		Str("pod", t.info.Pod).
 		Str("container", t.info.Container).
 		Str("client_ip", t.info.ClientIP).
-		// tty payload has nul bytes strip for trace log
-		Str("stroke", strings.ReplaceAll(string(stroke), "\u0000", "")).
+		Str("stroke", string(payload)).
 		Msg("")
 }

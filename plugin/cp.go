@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	securejoin "github.com/cyphar/filepath-securejoin"
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,6 +33,12 @@ type CopyOptions struct {
 	ClientConfig *restclient.Config
 	Clientset    kubernetes.Interface
 	IOStreams    genericiooptions.IOStreams
+
+	// MaxArchiveBytes bounds the tar stream read from the pod and the total
+	// extracted content. MaxEntries bounds the number of tar entries.
+	// Zero values fall back to the defaults; the flags set explicit values.
+	MaxArchiveBytes int64
+	MaxEntries      int64
 }
 
 type fileSpec struct {
@@ -41,6 +48,129 @@ type fileSpec struct {
 }
 
 const errPathTraversal = "illegal file path in tar: %s (path traversal attempt)"
+
+const (
+	// defaultMaxArchiveBytes bounds the tar stream pulled from a pod: the pod
+	// controls the stream, so without a cap a hostile workload could exhaust
+	// the client's memory.
+	defaultMaxArchiveBytes = 512 << 20 // 512 MiB
+	// defaultMaxEntries bounds the tar entry count against metadata bombs.
+	defaultMaxEntries = 100_000
+	// maxStderrBytes bounds the pod's stderr; it is only used for error
+	// messages, so excess is truncated with a marker instead of failing.
+	maxStderrBytes = 4 << 20 // 4 MiB
+)
+
+func (o *CopyOptions) maxArchiveBytes() int64 {
+	if o.MaxArchiveBytes > 0 {
+		return o.MaxArchiveBytes
+	}
+	return defaultMaxArchiveBytes
+}
+
+func (o *CopyOptions) maxTarEntries() int64 {
+	if o.MaxEntries > 0 {
+		return o.MaxEntries
+	}
+	return defaultMaxEntries
+}
+
+// cappedWriter fails the stream once more than max bytes pass through.
+type cappedWriter struct {
+	w   io.Writer
+	max int64
+	n   int64
+	err error
+}
+
+func (c *cappedWriter) Write(p []byte) (int, error) {
+	if c.err != nil {
+		return 0, c.err
+	}
+	if remaining := c.max - c.n; int64(len(p)) > remaining {
+		if remaining > 0 {
+			_, _ = c.w.Write(p[:remaining])
+		}
+		c.n = c.max
+		c.err = fmt.Errorf("stream exceeds the %d byte limit", c.max)
+		return 0, c.err
+	}
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
+func (c *cappedWriter) exceeded() bool { return c.err != nil }
+
+// tarLimits tracks the entry count and declared content bytes of one
+// extraction. The pod controls the stream, so both are bounded: declared
+// sizes are used, meaning sparse entries count in full.
+type tarLimits struct {
+	maxEntries int64
+	maxBytes   int64
+	entries    int64
+	totalBytes int64
+}
+
+func (l *tarLimits) add(header *tar.Header) error {
+	l.entries++
+	if l.entries > l.maxEntries {
+		return fmt.Errorf("tar contains too many entries (limit %d)", l.maxEntries)
+	}
+	if header.Typeflag == tar.TypeReg {
+		if header.Size < 0 {
+			return fmt.Errorf("tar entry %s has a negative size", sanitizeTerminal(header.Name))
+		}
+		l.totalBytes += header.Size
+		if l.totalBytes > l.maxBytes {
+			return fmt.Errorf("extracted content exceeds the %d byte limit", l.maxBytes)
+		}
+	}
+	return nil
+}
+
+// truncatingBuffer keeps only the first max bytes; excess is discarded and
+// marked, because stderr overflow must not kill the copy.
+type truncatingBuffer struct {
+	buf       bytes.Buffer
+	max       int64
+	truncated bool
+}
+
+func (t *truncatingBuffer) Write(p []byte) (int, error) {
+	if remaining := t.max - int64(t.buf.Len()); remaining >= int64(len(p)) {
+		t.buf.Write(p)
+	} else {
+		if remaining > 0 {
+			t.buf.Write(p[:remaining])
+		}
+		t.truncated = true
+	}
+	return len(p), nil
+}
+
+func (t *truncatingBuffer) String() string {
+	if t.truncated {
+		return t.buf.String() + "\n[... stderr truncated ...]"
+	}
+	return t.buf.String()
+}
+
+// sanitizeTerminal strips control characters from pod-controlled strings
+// before they reach the user's terminal, so a workload cannot inject escape
+// sequences (cursor movement, color bombs, OSC clipboard, ...) into cp
+// warnings or error messages.
+func sanitizeTerminal(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
 
 // NewCmdCp creates a new 'cp' command for the rexec plugin.
 // It supports copying files and directories from containers to the local filesystem with auditing.
@@ -80,6 +210,8 @@ func NewCmdCp(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Co
 	}
 
 	cmd.Flags().StringVarP(&o.Container, "container", "c", "", "Container name. If omitted, use the first container")
+	cmd.Flags().Int64Var(&o.MaxArchiveBytes, "cp-max-archive-size", defaultMaxArchiveBytes, "Maximum bytes read from the pod and extracted (the pod controls the stream)")
+	cmd.Flags().Int64Var(&o.MaxEntries, "cp-max-files", defaultMaxEntries, "Maximum number of tar entries accepted from the pod")
 	return cmd
 }
 
@@ -189,10 +321,17 @@ func (o *CopyOptions) copyFromPod(ctx context.Context, src, dest *fileSpec) erro
 	srcBase := filepath.Base(src.File)
 	command := []string{"tar", "cf", "-", "-C", srcDir, "--", srcBase}
 
-	var stdout, stderr bytes.Buffer
-	execErr := o.executeRemote(ctx, pod, containerName, command, &stdout, &stderr)
+	// The pod controls both streams: cap stdout hard (it becomes local files
+	// and memory) and truncate stderr softly (it only feeds error messages).
+	var stdout bytes.Buffer
+	cappedStdout := &cappedWriter{w: &stdout, max: o.maxArchiveBytes()}
+	stderr := &truncatingBuffer{max: maxStderrBytes}
+	execErr := o.executeRemote(ctx, pod, containerName, command, cappedStdout, stderr)
 
 	if execErr != nil {
+		if cappedStdout.exceeded() {
+			return fmt.Errorf("archive from pod exceeds the %d byte limit (raise with --cp-max-archive-size)", o.maxArchiveBytes())
+		}
 		return o.handleExecError(execErr, stderr.String(), src)
 	}
 
@@ -228,7 +367,9 @@ func (o *CopyOptions) handleExecError(execErr error, stderrStr string, src *file
 	}
 
 	if stderrStr != "" {
-		return fmt.Errorf("pod %s: %s", podRef, strings.TrimSpace(stderrStr))
+		// stderr is pod-controlled: strip control characters so a workload
+		// cannot inject terminal escape sequences into the printed error.
+		return fmt.Errorf("pod %s: %s", podRef, strings.TrimSpace(sanitizeTerminal(stderrStr)))
 	}
 
 	return fmt.Errorf("pod %s: command failed: %v", podRef, execErr)
@@ -256,7 +397,7 @@ func (o *CopyOptions) resolveContainer(pod *corev1.Pod) (string, error) {
 	return container.Name, nil
 }
 
-func (o *CopyOptions) executeRemote(ctx context.Context, pod *corev1.Pod, container string, command []string, stdout, stderr *bytes.Buffer) error {
+func (o *CopyOptions) executeRemote(ctx context.Context, pod *corev1.Pod, container string, command []string, stdout, stderr io.Writer) error {
 	restClient, err := restclient.RESTClientFor(o.ClientConfig)
 	if err != nil {
 		return err
@@ -302,6 +443,7 @@ func (o *CopyOptions) extractTar(reader io.Reader, destPath, srcBase string) err
 	}
 
 	tarReader := tar.NewReader(reader)
+	limits := &tarLimits{maxEntries: o.maxTarEntries(), maxBytes: o.maxArchiveBytes()}
 	for {
 		header, err := tarReader.Next()
 		if err == io.EOF {
@@ -310,15 +452,22 @@ func (o *CopyOptions) extractTar(reader io.Reader, destPath, srcBase string) err
 		if err != nil {
 			return fmt.Errorf("tar read error: %v", err)
 		}
+		if err := limits.add(header); err != nil {
+			return err
+		}
 
 		// Security: validate and compute safe target path
 		targetAbs, err := computeSafeTarget(header.Name, destPath, baseAbs, srcBase, destIsDir)
 		if err != nil {
 			return err
 		}
+		relTarget, err := filepath.Rel(baseAbs, targetAbs)
+		if err != nil {
+			return fmt.Errorf(errPathTraversal, header.Name)
+		}
 
 		// Delegated the actual file creation to reduce cognitive complexity
-		if err := o.processTarEntry(header, tarReader, targetAbs); err != nil {
+		if err := o.processTarEntry(header, tarReader, baseAbs, relTarget); err != nil {
 			return err
 		}
 	}
@@ -326,17 +475,37 @@ func (o *CopyOptions) extractTar(reader io.Reader, destPath, srcBase string) err
 }
 
 // processTarEntry handles the creation of directories, files, or skipping symlinks based on the tar header type.
-func (o *CopyOptions) processTarEntry(header *tar.Header, tarReader *tar.Reader, targetAbs string) error {
+// Every target is resolved with securejoin against root first, so symlinked
+// path components under the destination (planted by another local actor)
+// cannot redirect writes outside of root. Residual note: SecureJoin resolves
+// lexically, so a local process racing a symlink swap between resolution and
+// open could still win a TOCTOU window; such a process could already write
+// the user's files directly, so this is accepted.
+func (o *CopyOptions) processTarEntry(header *tar.Header, tarReader *tar.Reader, root, rel string) error {
 	switch header.Typeflag {
 	case tar.TypeDir:
-		if err := os.MkdirAll(targetAbs, os.FileMode(header.Mode)); err != nil {
+		resolved, err := securejoin.SecureJoin(root, rel)
+		if err != nil {
+			return fmt.Errorf("mkdir failed: %v", err)
+		}
+		if err := os.MkdirAll(resolved, os.FileMode(header.Mode)); err != nil {
 			return fmt.Errorf("mkdir failed: %v", err)
 		}
 	case tar.TypeReg:
-		if err := os.MkdirAll(filepath.Dir(targetAbs), 0755); err != nil {
-			return fmt.Errorf("mkdir failed: %v", err)
+		if dir := filepath.Dir(rel); dir != "." {
+			resolvedDir, err := securejoin.SecureJoin(root, dir)
+			if err != nil {
+				return fmt.Errorf("mkdir failed: %v", err)
+			}
+			if err := os.MkdirAll(resolvedDir, 0755); err != nil {
+				return fmt.Errorf("mkdir failed: %v", err)
+			}
 		}
-		f, err := os.OpenFile(targetAbs, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+		resolved, err := securejoin.SecureJoin(root, rel)
+		if err != nil {
+			return fmt.Errorf("create file failed: %v", err)
+		}
+		f, err := os.OpenFile(resolved, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
 		if err != nil {
 			return fmt.Errorf("create file failed: %v", err)
 		}
@@ -349,13 +518,13 @@ func (o *CopyOptions) processTarEntry(header *tar.Header, tarReader *tar.Reader,
 		}
 	case tar.TypeSymlink:
 		//nolint:errcheck
-		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping symlink %s -> %s (symlinks not supported for security)\n", header.Name, header.Linkname)
+		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping symlink %s -> %s (symlinks not supported for security)\n", sanitizeTerminal(header.Name), sanitizeTerminal(header.Linkname))
 	case tar.TypeLink:
 		//nolint:errcheck
-		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping hard link %s -> %s (hard links not supported for security)\n", header.Name, header.Linkname)
+		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping hard link %s -> %s (hard links not supported for security)\n", sanitizeTerminal(header.Name), sanitizeTerminal(header.Linkname))
 	default:
 		//nolint:errcheck
-		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping unsupported tar entry %s (type %d)\n", header.Name, header.Typeflag)
+		_, _ = fmt.Fprintf(o.IOStreams.ErrOut, "Warning: skipping unsupported tar entry %s (type %d)\n", sanitizeTerminal(header.Name), header.Typeflag)
 	}
 	return nil
 }
@@ -372,6 +541,14 @@ func computeSafeTarget(name, destPath, baseAbs, srcBase string, destIsDir bool) 
 	if destIsDir {
 		target = filepath.Join(destPath, cleanName)
 	} else {
+		// Copying to a non-directory destination: the tar stream is produced
+		// by `tar cf - -C <dir> -- <srcBase>`, so every legitimate entry is
+		// exactly srcBase or lives under it. Anything else (e.g. "foobar" or
+		// "foo2/evil", which filepath.Rel would map to "../...") is a crafted
+		// stream trying to write siblings of the requested file.
+		if cleanName != srcBase && !strings.HasPrefix(cleanName, srcBase+"/") {
+			return "", fmt.Errorf(errPathTraversal, name)
+		}
 		rel, err := filepath.Rel(srcBase, cleanName)
 		if err != nil {
 			return "", fmt.Errorf("failed to calculate relative path: %v", err)

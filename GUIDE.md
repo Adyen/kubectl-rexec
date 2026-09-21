@@ -11,3 +11,10 @@
 `--max-strokes-per-line` with this flag we can alter the treshold we have on a linelength before async audit flushes, keep in mind the increasing it too high might lead oom kills on the rexec server
 
 `--cluster-domain` cluster DNS suffix for the kubernetes apiserver service (e.g. `corp.internal` instead of `cluster.local`). When unset, `CLUSTER_DOMAIN` env is used, then `cluster.local`. Dialing uses `KUBERNETES_SERVICE_HOST` when present.
+
+## Security notes
+
+- **Interactive sessions require WebSocket.** Recorded (interactive) exec sessions are only accepted over the WebSocket protocol; SPDY interactive sessions are rejected with `400` because the audit tap cannot parse them. WebSocket exec is the default in kubectl since 1.30; SPDY-only clients (kubectl < 1.30 or `KUBECTL_REMOTE_COMMAND_WEBSOCKETS=false`) keep working for one-off commands and `rexec cp` but cannot open interactive sessions.
+- **Terminal control sequences pass through on interactive exec.** As with `kubectl exec`, a workload can emit escape sequences to the user's terminal during an interactive session. This matches upstream behavior and is an accepted risk; use one-off exec when the workload is not trusted.
+- **Metrics endpoint is unauthenticated.** The rexec server exposes Prometheus metrics on `:9090` (aggregate counters only, no per-user or per-command data). Restrict it with a NetworkPolicy to your monitoring namespace, or disable it with `--metrics-port=0`.
+- **`rexec cp` limits.** The pod controls the tar stream, so the client bounds it: `--cp-max-archive-size` (default 512 MiB) caps the stream and total extracted bytes, and `--cp-max-files` (default 100000) caps the entry count. Extraction is confined to the destination even if parts of it are symlinks, and tar symlink/hardlink entries are skipped.
