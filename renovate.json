@@ -4,6 +4,7 @@
     "internalChecksFilter": "strict",
     "updateNotScheduled": false,
     "minimumReleaseAge": "21 days",
+    "postUpdateOptions": ["gomodTidy"],
     "pre-commit": {
         "enabled": true
     },
