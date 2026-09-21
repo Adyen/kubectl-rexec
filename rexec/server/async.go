@@ -9,8 +9,21 @@ func asyncAuditor() {
 			SysLogger.Debug().Msg("channel closed, stopping asyncAuditor")
 			break
 		}
+		if audit.drained != nil {
+			close(audit.drained)
+			continue
+		}
 		storeOrFlush(audit)
 	}
+}
+
+// drainAsyncAudits waits until the auditor has processed every event already
+// handed to the channel. Session teardown uses this before flushing the final
+// unterminated command from commandMap.
+func drainAsyncAudits() {
+	drained := make(chan struct{})
+	asyncAuditChan <- asyncAudit{drained: drained}
+	<-drained
 }
 
 // storeOrFlush will push keystrokes into a byte slice and
@@ -47,7 +60,8 @@ func storeOrFlush(audit asyncAudit) {
 }
 
 type asyncAudit struct {
-	ctxid string
-	info  sessionInfo
-	ascii []byte
+	ctxid   string
+	info    sessionInfo
+	ascii   []byte
+	drained chan struct{}
 }

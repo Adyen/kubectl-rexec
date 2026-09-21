@@ -1,0 +1,238 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __NAMESPACE__
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __OTHER_NAMESPACE__
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __POD__
+  namespace: __NAMESPACE__
+  labels:
+    app: rexec-e2e-running
+  annotations:
+    kubectl.kubernetes.io/default-container: primary
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  containers:
+  - name: primary
+    image: busybox:1.36.1
+    imagePullPolicy: IfNotPresent
+    command: [sleep, infinity]
+    env:
+    - name: REXEC_CONTAINER
+      value: primary
+    resources:
+      requests:
+        cpu: 5m
+        ephemeral-storage: 1Mi
+        memory: 4Mi
+      limits:
+        memory: 32Mi
+  - name: secondary
+    image: busybox:1.36.1
+    imagePullPolicy: IfNotPresent
+    command: [sleep, infinity]
+    env:
+    - name: REXEC_CONTAINER
+      value: secondary
+    resources:
+      requests:
+        cpu: 5m
+        ephemeral-storage: 1Mi
+        memory: 4Mi
+      limits:
+        memory: 32Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __UNANNOTATED_POD__
+  namespace: __NAMESPACE__
+  labels:
+    app: rexec-e2e-running
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  containers:
+  - name: primary
+    image: busybox:1.36.1
+    imagePullPolicy: IfNotPresent
+    command: [sleep, infinity]
+    env:
+    - name: REXEC_CONTAINER
+      value: primary
+    resources:
+      requests:
+        cpu: 5m
+        ephemeral-storage: 1Mi
+        memory: 4Mi
+      limits:
+        memory: 32Mi
+  - name: secondary
+    image: busybox:1.36.1
+    imagePullPolicy: IfNotPresent
+    command: [sleep, infinity]
+    env:
+    - name: REXEC_CONTAINER
+      value: secondary
+    resources:
+      requests:
+        cpu: 5m
+        ephemeral-storage: 1Mi
+        memory: 4Mi
+      limits:
+        memory: 32Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: namespace-target
+  namespace: __OTHER_NAMESPACE__
+  labels:
+    app: rexec-e2e-running
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  containers:
+  - name: primary
+    image: busybox:1.36.1
+    imagePullPolicy: IfNotPresent
+    command: [sleep, infinity]
+    env:
+    - name: REXEC_CONTAINER
+      value: other-namespace
+    resources:
+      requests:
+        cpu: 5m
+        ephemeral-storage: 1Mi
+        memory: 4Mi
+      limits:
+        memory: 32Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resource-target
+  namespace: __NAMESPACE__
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rexec-e2e-resource
+  template:
+    metadata:
+      labels:
+        app: rexec-e2e-resource
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - name: primary
+        image: busybox:1.36.1
+        imagePullPolicy: IfNotPresent
+        command: [sleep, infinity]
+        env:
+        - name: REXEC_CONTAINER
+          value: resource
+        resources:
+          requests:
+            cpu: 5m
+            ephemeral-storage: 1Mi
+            memory: 4Mi
+          limits:
+            memory: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: resource-target
+  namespace: __NAMESPACE__
+spec:
+  selector:
+    app: rexec-e2e-resource
+  ports:
+  - name: placeholder
+    port: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pending-target
+  namespace: __NAMESPACE__
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: rexec-e2e-pending
+  template:
+    metadata:
+      labels:
+        app: rexec-e2e-pending
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - name: primary
+        image: busybox:1.36.1
+        imagePullPolicy: IfNotPresent
+        command: [sleep, infinity]
+        resources:
+          requests:
+            cpu: 5m
+            ephemeral-storage: 1Mi
+            memory: 4Mi
+          limits:
+            memory: 32Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: completed-target
+  namespace: __NAMESPACE__
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  containers:
+  - name: primary
+    image: busybox:1.36.1
+    imagePullPolicy: IfNotPresent
+    command: [sh, -c, "exit 0"]
+    resources:
+      requests:
+        cpu: 5m
+        ephemeral-storage: 1Mi
+        memory: 4Mi
+      limits:
+        memory: 32Mi
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rexec-e2e-read-api
+  namespace: __NAMESPACE__
+rules:
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [get, list]
+- apiGroups: [audit.adyen.internal]
+  resources: [pods/exec]
+  verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rexec-e2e-denied-read-api
+  namespace: __NAMESPACE__
+subjects:
+- kind: User
+  name: rexec-e2e-denied
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: rexec-e2e-read-api
+  apiGroup: rbac.authorization.k8s.io

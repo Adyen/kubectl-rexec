@@ -2,6 +2,31 @@
 
 Complete testing for `kubectl-rexec`.
 
+## Exec contract tests
+
+The E2E suite builds the plugin and server, installs them in a disposable Kind
+cluster, and exercises the real aggregated API and validating webhook:
+
+```bash
+./scripts/e2e.sh
+```
+
+Docker, Kind, kubectl, and Go must be installed. Set
+`REXEC_KEEP_CLUSTER=true` to retain the cluster for debugging. CI runs the
+suite against Kubernetes 1.29 with
+`TranslateStreamCloseWebsocketRequests=true` and Kubernetes 1.35.
+
+The contract suite validates:
+
+- stdout, stderr, command arguments, remote exit status, and execution errors
+- stdin with and without a TTY, EOF, terminal resize, and merged TTY streams
+- pod, namespace, deployment, service, manifest, default-container, and explicit-container targeting
+- every command-local `exec` flag; adding a flag without contract coverage fails CI
+- WebSocket interactive sessions, SPDY one-off sessions, and SPDY interactive rejection
+- command, keystroke, lifecycle, user, pod, container, namespace, and client-IP audit fields
+- user and group impersonation, upstream RBAC enforcement, and direct-exec denial
+- missing and completed targets, plus pod-running timeout behavior
+
 ## Unit Tests
 
 ### Running Tests

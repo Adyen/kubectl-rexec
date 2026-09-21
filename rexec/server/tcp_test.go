@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -135,6 +136,59 @@ func TestQueuedAuditRetainsSessionInfoAfterEnd(t *testing.T) {
 	}
 
 	t.Fatalf("queued command was not audited; output=%s", output.String())
+}
+
+func TestDrainAsyncAuditsBeforeEndSession(t *testing.T) {
+	oldSessionMap := sessionMap
+	oldCommandMap := commandMap
+	oldAsyncAuditChan := asyncAuditChan
+	oldAuditLogger := auditLogger
+	oldMaxStrokesPerLine := MaxStokesPerLine
+	t.Cleanup(func() {
+		sessionMap = oldSessionMap
+		commandMap = oldCommandMap
+		asyncAuditChan = oldAsyncAuditChan
+		auditLogger = oldAuditLogger
+		MaxStokesPerLine = oldMaxStrokesPerLine
+	})
+
+	sessionMap = map[string]sessionInfo{}
+	commandMap = map[string][]byte{}
+	asyncAuditChan = make(chan asyncAudit)
+	MaxStokesPerLine = 2000
+
+	var output bytes.Buffer
+	auditLogger = zerolog.New(&output)
+
+	auditorStopped := make(chan struct{})
+	go func() {
+		asyncAuditor()
+		close(auditorStopped)
+	}()
+	t.Cleanup(func() {
+		close(asyncAuditChan)
+		<-auditorStopped
+	})
+
+	const (
+		sessionID = "drained-session"
+		command   = "unterminated"
+	)
+	info := registerSession(sessionID, "alice", "test-ns", "shell", "app", "192.0.2.1")
+	asyncAuditChan <- asyncAudit{ctxid: sessionID, info: info, ascii: []byte(command)}
+
+	drainAsyncAudits()
+	commandSync.Lock()
+	bufferedCommand := string(commandMap[sessionID])
+	commandSync.Unlock()
+	if bufferedCommand != command {
+		t.Fatalf("buffered command after drain = %q, want %q", bufferedCommand, command)
+	}
+	endSession(sessionID)
+
+	if !strings.Contains(output.String(), `"command":"`+command+`"`) {
+		t.Fatalf("unterminated command was not audited; output=%s", output.String())
+	}
 }
 
 func TestSessionLifecycleConcurrentWithAudit(t *testing.T) {
