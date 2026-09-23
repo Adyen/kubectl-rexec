@@ -10,6 +10,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,8 +24,39 @@ import (
 const maxAdmissionReviewBytes = 1 << 20 // 1 MiB
 
 const maxRecordingSessions = 128
+const maxRecordingSessionsPerUser = 16
 
-var recordingSessions = make(chan struct{}, maxRecordingSessions)
+type recordingSessionLimiter struct {
+	mu      sync.Mutex
+	total   int
+	perUser map[string]int
+}
+
+var recordingSessions recordingSessionLimiter
+
+func (l *recordingSessionLimiter) acquire(user string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.total >= maxRecordingSessions || l.perUser[user] >= maxRecordingSessionsPerUser {
+		return false
+	}
+	if l.perUser == nil {
+		l.perUser = make(map[string]int)
+	}
+	l.total++
+	l.perUser[user]++
+	return true
+}
+
+func (l *recordingSessionLimiter) release(user string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.total--
+	l.perUser[user]--
+	if l.perUser[user] == 0 {
+		delete(l.perUser, user)
+	}
+}
 
 type rexecRequest struct {
 	namespace string
@@ -119,14 +151,12 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if execParams.needsRecording {
-		select {
-		case recordingSessions <- struct{}{}:
-			defer func() { <-recordingSessions }()
-		default:
+		if !recordingSessions.acquire(req.user) {
 			recordError("session_limit")
 			http.Error(w, "too many recorded sessions", http.StatusServiceUnavailable)
 			return
 		}
+		defer recordingSessions.release(req.user)
 	}
 
 	if !prepareRexecProxyRequest(w, r, req) {

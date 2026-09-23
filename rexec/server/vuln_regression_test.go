@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -72,6 +73,20 @@ func TestRegressionUnauditableFramesNotForwarded(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRegressionRejectedBatchDoesNotAuditUnsentCommand(t *testing.T) {
+	setupAuditCapture(t, 1)
+	conn := &stubConn{}
+	logger := &TCPLogger{Conn: conn, websocketOpen: true}
+	command := maskedFrame(true, 0x2, []byte("\x00id\n"), [4]byte{1, 2, 3, 4})
+	oversized := extendedFrame(0x2, 1<<20, nil)
+
+	n, err := logger.Write(append(command, oversized...))
+	if err == nil || n != 0 || len(forwardedBytes(conn)) != 0 {
+		t.Fatalf("rejected batch forwarded bytes: n=%d, err=%v", n, err)
+	}
+	expectNoAudit(t)
 }
 
 func TestRegressionNonTTYBackspacesCannotEraseCommand(t *testing.T) {
@@ -145,14 +160,19 @@ func TestRegressionRecordedSessionLimitRejectsBeforeProxy(t *testing.T) {
 	t.Cleanup(func() { RequestHeaderAllowedNames = oldNames })
 	RequestHeaderAllowedNames = nil
 
-	for range cap(recordingSessions) {
-		recordingSessions <- struct{}{}
-	}
+	var users []string
 	t.Cleanup(func() {
-		for range cap(recordingSessions) {
-			<-recordingSessions
+		for _, user := range users {
+			recordingSessions.release(user)
 		}
 	})
+	for i := range maxRecordingSessions {
+		user := fmt.Sprintf("user-%d", i/maxRecordingSessionsPerUser)
+		if !recordingSessions.acquire(user) {
+			t.Fatalf("global limit rejected session %d", i)
+		}
+		users = append(users, user)
+	}
 
 	req := httptest.NewRequest(http.MethodGet,
 		"/apis/audit.adyen.internal/v1beta1/namespaces/ns/pods/pod/exec?command=sh&stdin=true", nil)
@@ -166,5 +186,24 @@ func TestRegressionRecordedSessionLimitRejectsBeforeProxy(t *testing.T) {
 	rexecHandler(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("when recorded-session limit is reached: status = %d, want 503", rr.Code)
+	}
+}
+
+func TestRegressionOneUserCannotExhaustRecordingSlots(t *testing.T) {
+	var limiter recordingSessionLimiter
+	for range maxRecordingSessionsPerUser {
+		if !limiter.acquire("alice") {
+			t.Fatal("user rejected before reaching their limit")
+		}
+	}
+	if limiter.acquire("alice") {
+		t.Fatal("one user can exhaust every recording slot")
+	}
+	if !limiter.acquire("bob") {
+		t.Fatal("other users should still have capacity")
+	}
+	limiter.release("alice")
+	if !limiter.acquire("alice") {
+		t.Fatal("released user slot was not reusable")
 	}
 }

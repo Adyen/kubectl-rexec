@@ -147,10 +147,14 @@ func (t *TCPLogger) Write(b []byte) (n int, err error) {
 	t.auditSync.Lock()
 	defer t.auditSync.Unlock()
 
-	if err := t.auditClientBytes(b); err != nil {
+	frames, err := t.auditClientBytes(b)
+	if err != nil {
 		// Upstream must never receive bytes that the audit cannot account for.
 		_ = t.Conn.Close()
 		return 0, err
+	}
+	for _, frame := range frames {
+		t.auditFrame(frame)
 	}
 	return t.Conn.Write(b)
 }
@@ -214,14 +218,14 @@ func codecForProtocol(protocol string) wsCodec {
 	}
 }
 
-func (t *TCPLogger) auditClientBytes(data []byte) error {
+func (t *TCPLogger) auditClientBytes(data []byte) ([]*webSocketFrame, error) {
 	if !t.websocketOpen {
 		data = t.consumeHTTPUpgrade(data)
 	}
 	if len(data) > 0 {
 		return t.bufferAndAuditFrames(data)
 	}
-	return nil
+	return nil, nil
 }
 
 // consumeHTTPUpgrade ignores the initial HTTP upgrade request. Retaining only
@@ -248,48 +252,55 @@ func (t *TCPLogger) consumeHTTPUpgrade(data []byte) []byte {
 	return nil
 }
 
-// bufferAndAuditFrames appends freshly written bytes to the frame buffer and
-// audits every complete frame. An incomplete trailing frame is kept for the
+// bufferAndAuditFrames collects complete frames for auditing only after the
+// entire write passes validation. An incomplete trailing frame is kept for the
 // next Write: the reverse proxy copies the stream in chunks (io.Copy with a
 // 32 KiB buffer, or however the peer paces its segments), so a frame spanning
 // multiple writes is normal and must not be dropped from the audit.
-func (t *TCPLogger) bufferAndAuditFrames(data []byte) error {
+func (t *TCPLogger) bufferAndAuditFrames(data []byte) ([]*webSocketFrame, error) {
+	var frames []*webSocketFrame
 	for len(data) > 0 {
 		n := min(len(data), maxFrameBuf-len(t.frameBuf))
 		t.frameBuf = append(t.frameBuf, data[:n]...)
 		data = data[n:]
 
 		for len(t.frameBuf) > 0 {
-			if declared, ok := declaredPayloadLength(t.frameBuf); ok {
-				headerLen := 2
-				switch t.frameBuf[1] & 0x7f {
-				case 126:
-					headerLen = 4
-				case 127:
-					headerLen = 10
-				}
-				if t.frameBuf[1]&0x80 != 0 {
-					headerLen += 4
-				}
-				if declared < 0 || declared > int64(maxFrameBuf-headerLen) {
-					return t.frameError("declared frame exceeds audit limit")
-				}
+			if !t.frameLengthValid() {
+				return nil, t.frameError("declared frame exceeds audit limit")
 			}
 			parsed, consumed, err := parseWebSocketFrame(t.frameBuf)
 			if err != nil {
 				break // incomplete header or payload
 			}
-			t.auditFrame(parsed)
+			frames = append(frames, parsed)
 			t.frameBuf = t.frameBuf[consumed:]
 		}
 		if len(t.frameBuf) == maxFrameBuf {
-			return t.frameError("incomplete frame filled audit buffer")
+			return nil, t.frameError("incomplete frame filled audit buffer")
 		}
 	}
 	if len(t.frameBuf) == 0 {
 		t.frameBuf = nil
 	}
-	return nil
+	return frames, nil
+}
+
+func (t *TCPLogger) frameLengthValid() bool {
+	declared, ok := declaredPayloadLength(t.frameBuf)
+	if !ok {
+		return true
+	}
+	headerLen := 2
+	switch t.frameBuf[1] & 0x7f {
+	case 126:
+		headerLen = 4
+	case 127:
+		headerLen = 10
+	}
+	if t.frameBuf[1]&0x80 != 0 {
+		headerLen += 4
+	}
+	return declared >= 0 && declared <= int64(maxFrameBuf-headerLen)
 }
 
 func (t *TCPLogger) frameError(message string) error {
