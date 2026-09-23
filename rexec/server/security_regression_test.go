@@ -258,29 +258,26 @@ func TestRegressionControlFramesNotAudited(t *testing.T) {
 }
 
 // A frame whose declared length exceeds the cap (including int64-overflow
-// territory) is dropped loudly instead of pinning the buffer or misparsing.
-func TestRegressionFrameBufferOverflowDropped(t *testing.T) {
+// territory) is rejected before it can reach the upstream exec endpoint.
+func TestRegressionFrameBufferOverflowRejected(t *testing.T) {
 	setupAuditCapture(t, 8)
-	logger := &TCPLogger{Conn: &stubConn{}, ctxid: "s1", websocketOpen: true}
 
 	var ext [8]byte
 	binary.BigEndian.PutUint64(ext[:], maxFrameBuf+1)
 	huge := append([]byte{0x82, 0xFF}, ext[:]...) // FIN binary, 8-byte length, masked
-	if _, err := logger.Write(huge); err != nil {
-		t.Fatal(err)
-	}
-	if len(logger.frameBuf) != 0 {
-		t.Fatal("oversized declared frame must be dropped from the audit buffer")
-	}
 
-	// an unreasonably large length must also be dropped
+	// an unreasonably large length must also be rejected
 	binary.BigEndian.PutUint64(ext[:], math.MaxUint64)
-	huge = append([]byte{0x82, 0x7F}, ext[:]...) // unmasked variant
-	if _, err := logger.Write(huge); err != nil {
-		t.Fatal(err)
-	}
-	if len(logger.frameBuf) != 0 {
-		t.Fatal("overflowing declared length must be dropped from the audit buffer")
+	overflow := append([]byte{0x82, 0x7F}, ext[:]...) // unmasked variant
+	for _, frame := range [][]byte{huge, overflow} {
+		conn := &stubConn{}
+		logger := &TCPLogger{Conn: conn, ctxid: "s1", websocketOpen: true}
+		if _, err := logger.Write(frame); err == nil {
+			t.Fatal("oversized declared frame must be rejected")
+		}
+		if len(logger.frameBuf) != 0 || len(conn.written) != 0 {
+			t.Fatal("rejected frame must neither be buffered nor forwarded")
+		}
 	}
 }
 
@@ -424,7 +421,7 @@ func TestRegressionUnterminatedCommandFlushedAtSessionEnd(t *testing.T) {
 	output := setupCommandAudit(t)
 
 	const id = "eof-session"
-	registerSession(id, "mallory", "default", "shell", "app", "192.0.2.1")
+	registerSession(id, "mallory", "default", "shell", "app", "192.0.2.1", false)
 	storeOrFlush(asyncAudit{ctxid: id, ascii: []byte("touch /tmp/stealth")}) // no trailing CR/LF
 	endSession(id)
 
@@ -446,7 +443,7 @@ func TestRegressionNULBytesPreservedInAudit(t *testing.T) {
 	output := setupCommandAudit(t)
 
 	const id = "nul-session"
-	registerSession(id, "mallory", "default", "shell", "app", "192.0.2.1")
+	registerSession(id, "mallory", "default", "shell", "app", "192.0.2.1", false)
 	storeOrFlush(asyncAudit{ctxid: id, ascii: []byte("id\x00whoami\r")})
 
 	cmds := auditCommands(t, output)
