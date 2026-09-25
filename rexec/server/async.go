@@ -32,13 +32,17 @@ func storeOrFlush(audit asyncAudit) {
 	auditKeystrokesTotal.Add(float64(len(audit.ascii)))
 
 	for _, ascii := range audit.ascii {
-		switch ascii {
-		case 8, 127:
+		// Non-TTY stdin passes editing bytes to the process literally. Only
+		// the terminal driver interprets them as backspaces.
+		if audit.info.TTY && (ascii == 8 || ascii == 127) {
 			commandSync.Lock()
 			if len(commandMap[audit.ctxid]) > 0 {
 				commandMap[audit.ctxid] = commandMap[audit.ctxid][:len(commandMap[audit.ctxid])-1]
 			}
 			commandSync.Unlock()
+			continue
+		}
+		switch ascii {
 		case 10, 13: // LF (non-tty line input) or CR (tty Enter)
 			commandSync.Lock()
 			logCommand(string(commandMap[audit.ctxid]), audit.info.User, audit.ctxid, audit.info.NameSpace, audit.info.Pod, audit.info.Container, audit.info.ClientIP)

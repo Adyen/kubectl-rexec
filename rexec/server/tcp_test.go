@@ -97,7 +97,7 @@ func TestQueuedAuditRetainsSessionInfoAfterEnd(t *testing.T) {
 	auditLogger = zerolog.New(&output)
 
 	const sessionID = "queued-session"
-	wantInfo := registerSession(sessionID, "alice", "test-ns", "shell", "app", "192.0.2.1")
+	wantInfo := registerSession(sessionID, "alice", "test-ns", "shell", "app", "192.0.2.1", false)
 	queued := asyncAudit{ctxid: sessionID, info: wantInfo, ascii: []byte("whoami\r")}
 
 	// Reproduce the asynchronous ordering that caused the original bug: the
@@ -174,7 +174,7 @@ func TestDrainAsyncAuditsBeforeEndSession(t *testing.T) {
 		sessionID = "drained-session"
 		command   = "unterminated"
 	)
-	info := registerSession(sessionID, "alice", "test-ns", "shell", "app", "192.0.2.1")
+	info := registerSession(sessionID, "alice", "test-ns", "shell", "app", "192.0.2.1", false)
 	asyncAuditChan <- asyncAudit{ctxid: sessionID, info: info, ascii: []byte(command)}
 
 	drainAsyncAudits()
@@ -221,7 +221,7 @@ func TestSessionLifecycleConcurrentWithAudit(t *testing.T) {
 		defer workers.Done()
 		<-start
 		for range iterations {
-			registerSession(sessionID, "alice", "test-ns", "shell", "app", "192.0.2.1")
+			registerSession(sessionID, "alice", "test-ns", "shell", "app", "192.0.2.1", false)
 			runtime.Gosched()
 			endSession(sessionID)
 		}

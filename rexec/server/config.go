@@ -47,6 +47,7 @@ type sessionInfo struct {
 	Pod       string
 	Container string
 	ClientIP  string
+	TTY       bool
 }
 
 var token string
