@@ -10,6 +10,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +23,41 @@ import (
 // AdmissionReview payloads are a few KiB at most.
 const maxAdmissionReviewBytes = 1 << 20 // 1 MiB
 
+const maxRecordingSessions = 128
+const maxRecordingSessionsPerUser = 16
+
+type recordingSessionLimiter struct {
+	mu      sync.Mutex
+	total   int
+	perUser map[string]int
+}
+
+var recordingSessions recordingSessionLimiter
+
+func (l *recordingSessionLimiter) acquire(user string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.total >= maxRecordingSessions || l.perUser[user] >= maxRecordingSessionsPerUser {
+		return false
+	}
+	if l.perUser == nil {
+		l.perUser = make(map[string]int)
+	}
+	l.total++
+	l.perUser[user]++
+	return true
+}
+
+func (l *recordingSessionLimiter) release(user string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.total--
+	l.perUser[user]--
+	if l.perUser[user] == 0 {
+		delete(l.perUser, user)
+	}
+}
+
 type rexecRequest struct {
 	namespace string
 	pod       string
@@ -33,6 +69,7 @@ type rexecExecParams struct {
 	needsRecording bool
 	container      string
 	clientIP       string
+	tty            bool
 }
 
 func Server() {
@@ -49,7 +86,7 @@ func Server() {
 		}
 	}))
 	// handle native pod exec through a validating webhook
-	r.HandleFunc("/validate-exec", instrumentHandler("webhook", execHandler))
+	r.HandleFunc("/validate-exec", instrumentHandler("webhook", webhookHandler))
 
 	// start tls listener.
 	//
@@ -60,11 +97,8 @@ func Server() {
 	// not RequireAndVerifyClientCert at the listener because the admission
 	// webhook (/validate-exec) is served on the same port and the apiserver does
 	// not necessarily present a requestheader certificate when calling it.
-	// ReadHeaderTimeout and IdleTimeout bound slow-connection (Slowloris)
-	// resource exhaustion against this fail-closed webhook backend.
-	// ReadTimeout/WriteTimeout are deliberately not set: exec sessions upgrade
-	// to long-lived WebSocket connections that the reverse proxy hijacks, and
-	// server-wide read/write deadlines would break or add no value to them.
+	// ReadHeaderTimeout bounds slow headers. The webhook sets its own body
+	// read deadline without imposing one on long-running exec sessions.
 	srv := &http.Server{
 		Addr:              ":8443",
 		Handler:           r,
@@ -114,6 +148,15 @@ func rexecHandler(w http.ResponseWriter, r *http.Request) {
 			SysLogger.Error().Err(err).Msg("failed to write bad request response")
 		}
 		return
+	}
+
+	if execParams.needsRecording {
+		if !recordingSessions.acquire(req.user) {
+			recordError("session_limit")
+			http.Error(w, "too many recorded sessions", http.StatusServiceUnavailable)
+			return
+		}
+		defer recordingSessions.release(req.user)
 	}
 
 	if !prepareRexecProxyRequest(w, r, req) {
@@ -215,6 +258,7 @@ func parseRexecExecParams(w http.ResponseWriter, r *http.Request) (rexecExecPara
 		needsRecording: needsRecording,
 		container:      container,
 		clientIP:       getIP(r),
+		tty:            isTruthy(params["tty"]),
 	}, true
 }
 
@@ -247,7 +291,7 @@ func serveRecordingRexecSession(w http.ResponseWriter, r *http.Request, proxy *h
 	defer activeSessions.WithLabelValues("recording").Dec()
 
 	ctxid := uuid.New().String()
-	info := registerSession(ctxid, req.user, req.namespace, req.pod, execParams.container, execParams.clientIP)
+	info := registerSession(ctxid, req.user, req.namespace, req.pod, execParams.container, execParams.clientIP, execParams.tty)
 	defer func() {
 		drainAsyncAudits()
 		endSession(ctxid)
@@ -297,6 +341,15 @@ func ensureValidToken() error {
 	return nil
 }
 
+func webhookHandler(w http.ResponseWriter, r *http.Request) {
+	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		recordError("webhook_deadline")
+		http.Error(w, "webhook read deadline unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	execHandler(w, r)
+}
+
 // execHandler is responsible for auditing exec request and allowing
 // the ones coming through rexec api along with allowlisted users
 func execHandler(w http.ResponseWriter, r *http.Request) {
@@ -317,6 +370,10 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, fmt.Sprintf("Failed to decode request: %v", err), http.StatusBadRequest)
+		return
+	}
+	if admissionReview.Request == nil {
+		http.Error(w, "Missing AdmissionReview request", http.StatusBadRequest)
 		return
 	}
 

@@ -47,7 +47,7 @@ type fileSpec struct {
 	File         string
 }
 
-const errPathTraversal = "illegal file path in tar: %s (path traversal attempt)"
+const errPathTraversal = "illegal file path in tar: %q (path traversal attempt)"
 
 const (
 	// defaultMaxArchiveBytes bounds the tar stream pulled from a pod: the pod

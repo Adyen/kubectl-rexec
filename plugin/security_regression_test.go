@@ -198,3 +198,33 @@ func TestRegressionCpTerminalSanitization(t *testing.T) {
 		t.Fatalf("error must not contain escape characters, got %v", err)
 	}
 }
+
+func TestRegressionCpTraversalErrorsSanitizeTarNames(t *testing.T) {
+	for _, name := range []string{
+		"../\x1b]52;c;Y2xpcGJvYXJk\x07stolen",
+		"src-other/\x1b[2Jstolen",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			tw := tar.NewWriter(&buf)
+			if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: 1}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write([]byte("x")); err != nil {
+				t.Fatal(err)
+			}
+			if err := tw.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			dest := filepath.Join(t.TempDir(), "local")
+			err := (&CopyOptions{}).extractTar(&buf, dest, "src")
+			if err == nil || !strings.Contains(err.Error(), "illegal file path in tar") {
+				t.Fatalf("unsafe tar name %q: expected traversal error, got %v", name, err)
+			}
+			if strings.ContainsAny(err.Error(), "\x1b\x07") {
+				t.Fatalf("tar name %q leaked terminal escapes: %q", name, err)
+			}
+		})
+	}
+}

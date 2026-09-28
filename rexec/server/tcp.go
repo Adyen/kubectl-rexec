@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -62,9 +63,9 @@ func dialAuditedConn(ctx context.Context, sessionID string, info sessionInfo) (n
 	return &TCPLogger{Conn: tlsConn, ctxid: sessionID, info: info}, nil
 }
 
-func registerSession(ctxid, user, namespace, pod, container, clientIP string) sessionInfo {
+func registerSession(ctxid, user, namespace, pod, container, clientIP string, tty bool) sessionInfo {
 	info := sessionInfo{
-		User: user, NameSpace: namespace, Pod: pod, Container: container, ClientIP: clientIP,
+		User: user, NameSpace: namespace, Pod: pod, Container: container, ClientIP: clientIP, TTY: tty,
 	}
 	mapSync.Lock()
 	sessionMap[ctxid] = info
@@ -114,10 +115,9 @@ const (
 	codecBase64
 )
 
-// maxFrameBuf bounds the buffered bytes of a single incomplete WebSocket
-// frame. Legitimate stdin frames are a handful of bytes; this only guards
-// against a hostile or broken peer declaring a giant payload.
-const maxFrameBuf = 32 << 20 // 32 MiB
+// Kubectl's WebSocket stdin chunks are 32 KiB. Bound per-session memory well
+// below the pod's limit, including the frame header and masking key.
+const maxFrameBuf = 64 << 10 // 64 KiB
 
 // maxUpgradeResponseHead bounds the buffered bytes while looking for the end
 // of the upstream 101 response headers.
@@ -132,7 +132,7 @@ type TCPLogger struct {
 	ctxid string
 	info  sessionInfo
 
-	auditSync     sync.Mutex // guards websocketOpen, headerTail, frameBuf
+	auditSync     sync.Mutex // guards websocketOpen, headerTail, frameBuf and write order
 	websocketOpen bool
 	headerTail    []byte
 	frameBuf      []byte
@@ -144,11 +144,19 @@ type TCPLogger struct {
 }
 
 func (t *TCPLogger) Write(b []byte) (n int, err error) {
-	n, err = t.Conn.Write(b)
-	if n > 0 {
-		t.auditClientBytes(b[:n])
+	t.auditSync.Lock()
+	defer t.auditSync.Unlock()
+
+	frames, err := t.auditClientBytes(b)
+	if err != nil {
+		// Upstream must never receive bytes that the audit cannot account for.
+		_ = t.Conn.Close()
+		return 0, err
 	}
-	return n, err
+	for _, frame := range frames {
+		t.auditFrame(frame)
+	}
+	return t.Conn.Write(b)
 }
 
 // Read taps the upstream -> client direction until the end of the 101 upgrade
@@ -210,16 +218,14 @@ func codecForProtocol(protocol string) wsCodec {
 	}
 }
 
-func (t *TCPLogger) auditClientBytes(data []byte) {
-	t.auditSync.Lock()
-	defer t.auditSync.Unlock()
-
+func (t *TCPLogger) auditClientBytes(data []byte) ([]*webSocketFrame, error) {
 	if !t.websocketOpen {
 		data = t.consumeHTTPUpgrade(data)
 	}
 	if len(data) > 0 {
-		t.bufferAndAuditFrames(data)
+		return t.bufferAndAuditFrames(data)
 	}
+	return nil, nil
 }
 
 // consumeHTTPUpgrade ignores the initial HTTP upgrade request. Retaining only
@@ -246,38 +252,61 @@ func (t *TCPLogger) consumeHTTPUpgrade(data []byte) []byte {
 	return nil
 }
 
-// bufferAndAuditFrames appends freshly written bytes to the frame buffer and
-// audits every complete frame. An incomplete trailing frame is kept for the
+// bufferAndAuditFrames collects complete frames for auditing only after the
+// entire write passes validation. An incomplete trailing frame is kept for the
 // next Write: the reverse proxy copies the stream in chunks (io.Copy with a
 // 32 KiB buffer, or however the peer paces its segments), so a frame spanning
 // multiple writes is normal and must not be dropped from the audit.
-func (t *TCPLogger) bufferAndAuditFrames(data []byte) {
-	t.frameBuf = append(t.frameBuf, data...)
-	for len(t.frameBuf) > 0 {
-		// Reject absurd declared lengths before parsing: an 8-byte length can
-		// overflow int64 downstream, and a peer promising an oversized frame
-		// would otherwise pin the buffer while the rest never arrives.
-		if declared, ok := declaredPayloadLength(t.frameBuf); ok && (declared < 0 || declared > maxFrameBuf) {
-			recordError("ws_frame_overflow")
-			SysLogger.Error().Int64("declared", declared).Msg("dropping oversized ws frame from audit buffer")
-			t.frameBuf = nil
-			return
-		}
-		parsed, consumed, err := parseWebSocketFrame(t.frameBuf)
-		if err != nil {
-			// All parse errors mean the frame is incomplete; wait for the
-			// rest of it instead of discarding the bytes.
-			if len(t.frameBuf) > maxFrameBuf {
-				recordError("ws_frame_overflow")
-				SysLogger.Error().Int("buffered", len(t.frameBuf)).Msg("dropping oversized incomplete ws frame from audit buffer")
-				t.frameBuf = nil
+func (t *TCPLogger) bufferAndAuditFrames(data []byte) ([]*webSocketFrame, error) {
+	var frames []*webSocketFrame
+	for len(data) > 0 {
+		n := min(len(data), maxFrameBuf-len(t.frameBuf))
+		t.frameBuf = append(t.frameBuf, data[:n]...)
+		data = data[n:]
+
+		for len(t.frameBuf) > 0 {
+			if !t.frameLengthValid() {
+				return nil, t.frameError("declared frame exceeds audit limit")
 			}
-			return
+			parsed, consumed, err := parseWebSocketFrame(t.frameBuf)
+			if err != nil {
+				break // incomplete header or payload
+			}
+			frames = append(frames, parsed)
+			t.frameBuf = t.frameBuf[consumed:]
 		}
-		t.auditFrame(parsed)
-		t.frameBuf = t.frameBuf[consumed:]
+		if len(t.frameBuf) == maxFrameBuf {
+			return nil, t.frameError("incomplete frame filled audit buffer")
+		}
 	}
+	if len(t.frameBuf) == 0 {
+		t.frameBuf = nil
+	}
+	return frames, nil
+}
+
+func (t *TCPLogger) frameLengthValid() bool {
+	declared, ok := declaredPayloadLength(t.frameBuf)
+	if !ok {
+		return true
+	}
+	headerLen := 2
+	switch t.frameBuf[1] & 0x7f {
+	case 126:
+		headerLen = 4
+	case 127:
+		headerLen = 10
+	}
+	if t.frameBuf[1]&0x80 != 0 {
+		headerLen += 4
+	}
+	return declared >= 0 && declared <= int64(maxFrameBuf-headerLen)
+}
+
+func (t *TCPLogger) frameError(message string) error {
+	recordError("ws_frame_overflow")
 	t.frameBuf = nil
+	return fmt.Errorf("WebSocket audit: %s", message)
 }
 
 // declaredPayloadLength returns the payload length declared in the frame
@@ -304,20 +333,16 @@ func declaredPayloadLength(buf []byte) (int64, bool) {
 
 // auditFrame audits the stdin content of one complete frame.
 //
-// The kubelet's wsstream layer (x/net/websocket) delivers EVERY data-carrying
-// frame as an independent message: continuation frames are relabeled to the
-// preceding data opcode but are never reassembled, and the payload type is not
-// enforced (a text frame on a binary protocol is accepted). The first payload
-// byte of every such frame is therefore interpreted as the channel, exactly
-// like upstream does, regardless of the FIN bit. Auditing per frame with the
-// same rule means nothing that can reach container stdin escapes the audit.
+// The kubelet's wsstream layer (x/net/websocket) delivers every non-control
+// frame, including reserved opcodes, as independent channel-prefixed data.
+// Continuation frames are relabeled but not reassembled. Audit every such
+// frame using the same rule so no stdin escapes the audit.
 func (t *TCPLogger) auditFrame(parsed *webSocketFrame) {
 	switch parsed.Opcode {
-	case 0x0, 0x1, 0x2: // continuation, text, binary
-		t.auditChannelPayload(parsed.Payload)
-	default:
-		// 0x8 close, 0x9 ping, 0xA pong: no stdin content
+	case 0x8, 0x9, 0xA: // close, ping, pong: no stdin content
+		return
 	}
+	t.auditChannelPayload(parsed.Payload)
 }
 
 func (t *TCPLogger) auditChannelPayload(payload []byte) {
