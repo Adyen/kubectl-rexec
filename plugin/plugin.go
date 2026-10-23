@@ -28,7 +28,7 @@ import (
 	"k8s.io/kubectl/pkg/util/term"
 )
 
-// We dont do much here, mostly implementing the same exec command
+// We don't do much here, mostly implementing the same exec command
 // as in upstream, with the difference in the path we are calling
 
 var MatchVersionKubeConfigFlags *cmdutil.MatchVersionFlags

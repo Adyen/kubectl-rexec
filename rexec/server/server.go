@@ -115,8 +115,8 @@ func Server() {
 	}
 }
 
-// rexecHandler is responsible for rewrite the request to an exec request
-// and proxy it back to k8s api
+// rexecHandler is responsible for rewriting the request to an exec request
+// and proxying it back to k8s api
 func rexecHandler(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer recordRexecSessionStatus(w)
@@ -350,7 +350,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	execHandler(w, r)
 }
 
-// execHandler is responsible for auditing exec request and allowing
+// execHandler is responsible for auditing exec requests and allowing
 // the ones coming through rexec api along with allowlisted users
 func execHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Content-Type") != "application/json" {
