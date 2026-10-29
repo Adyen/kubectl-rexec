@@ -209,5 +209,5 @@ No User found
 `
 
 var httpInternalError = `
-Internal errror
+Internal error
 `
