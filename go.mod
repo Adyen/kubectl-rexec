@@ -1,6 +1,6 @@
 module github.com/adyen/kubectl-rexec
 
-go 1.26.9
+go 1.27.3
 
 require (
 	github.com/creack/pty v1.1.24
