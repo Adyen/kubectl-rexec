@@ -81,10 +81,8 @@ kubectl rexec --help >/dev/null
 
 echo "building and loading images..."
 docker build -t "${REXEC_IMAGE}" -f "${REPO_ROOT}/Dockerfile" "${REPO_ROOT}"
-docker pull "${TEST_IMAGE}" >/dev/null
-docker image save --platform linux/amd64 --output /tmp/busybox.tar "${TEST_IMAGE}"
 kind load docker-image --name "${CLUSTER_NAME}" "${REXEC_IMAGE}"
-kind load image-archive --name "${CLUSTER_NAME}" /tmp/busybox.tar
+docker exec "${CLUSTER_NAME}-control-plane" crictl pull "${TEST_IMAGE}"
 
 echo "deploying rexec manifests..."
 TMP_MANIFEST="$(mktemp)"
