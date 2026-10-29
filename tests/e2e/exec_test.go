@@ -380,7 +380,7 @@ printf 'TTYERR:%s\n' >&2
 while :; do
 	if IFS= read -r line; then
 		printf 'GOT:%%s\n' "$line"
-		[ "$line" = exit ] && break
+		[ "$line" = exit ] && { sleep 1; break; }
 	fi
 done
 `, stderrToken)
