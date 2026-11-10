@@ -1,6 +1,6 @@
 package server
 
-// asyncAuditor will try to make merged commads out of keystrokes
+// asyncAuditor will try to make merged commands out of keystrokes
 func asyncAuditor() {
 	SysLogger.Debug().Msg("starting asyncAuditor")
 	for {
@@ -27,7 +27,7 @@ func drainAsyncAudits() {
 }
 
 // storeOrFlush will push keystrokes into a byte slice and
-// flush it upen enter or a certain limit
+// flush it upon enter or a certain limit
 func storeOrFlush(audit asyncAudit) {
 	auditKeystrokesTotal.Add(float64(len(audit.ascii)))
 
