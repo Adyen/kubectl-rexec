@@ -81,17 +81,17 @@ func TestQueuedAuditRetainsSessionInfoAfterEnd(t *testing.T) {
 	oldSessionMap := sessionMap
 	oldCommandMap := commandMap
 	oldAuditLogger := auditLogger
-	oldMaxStrokesPerLine := MaxStokesPerLine
+	oldMaxStrokesPerLine := MaxStrokesPerLine
 	t.Cleanup(func() {
 		sessionMap = oldSessionMap
 		commandMap = oldCommandMap
 		auditLogger = oldAuditLogger
-		MaxStokesPerLine = oldMaxStrokesPerLine
+		MaxStrokesPerLine = oldMaxStrokesPerLine
 	})
 
 	sessionMap = map[string]sessionInfo{}
 	commandMap = map[string][]byte{}
-	MaxStokesPerLine = 2000
+	MaxStrokesPerLine = 2000
 
 	var output bytes.Buffer
 	auditLogger = zerolog.New(&output)
@@ -143,19 +143,19 @@ func TestDrainAsyncAuditsBeforeEndSession(t *testing.T) {
 	oldCommandMap := commandMap
 	oldAsyncAuditChan := asyncAuditChan
 	oldAuditLogger := auditLogger
-	oldMaxStrokesPerLine := MaxStokesPerLine
+	oldMaxStrokesPerLine := MaxStrokesPerLine
 	t.Cleanup(func() {
 		sessionMap = oldSessionMap
 		commandMap = oldCommandMap
 		asyncAuditChan = oldAsyncAuditChan
 		auditLogger = oldAuditLogger
-		MaxStokesPerLine = oldMaxStrokesPerLine
+		MaxStrokesPerLine = oldMaxStrokesPerLine
 	})
 
 	sessionMap = map[string]sessionInfo{}
 	commandMap = map[string][]byte{}
 	asyncAuditChan = make(chan asyncAudit)
-	MaxStokesPerLine = 2000
+	MaxStrokesPerLine = 2000
 
 	var output bytes.Buffer
 	auditLogger = zerolog.New(&output)
@@ -195,18 +195,18 @@ func TestSessionLifecycleConcurrentWithAudit(t *testing.T) {
 	oldSessionMap := sessionMap
 	oldCommandMap := commandMap
 	oldAuditLogger := auditLogger
-	oldMaxStrokesPerLine := MaxStokesPerLine
+	oldMaxStrokesPerLine := MaxStrokesPerLine
 	t.Cleanup(func() {
 		sessionMap = oldSessionMap
 		commandMap = oldCommandMap
 		auditLogger = oldAuditLogger
-		MaxStokesPerLine = oldMaxStrokesPerLine
+		MaxStrokesPerLine = oldMaxStrokesPerLine
 	})
 
 	sessionMap = map[string]sessionInfo{}
 	commandMap = map[string][]byte{}
 	auditLogger = zerolog.Nop()
-	MaxStokesPerLine = 2000
+	MaxStrokesPerLine = 2000
 
 	const (
 		sessionID  = "concurrent-session"

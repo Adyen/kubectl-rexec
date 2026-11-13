@@ -1,6 +1,6 @@
 # Getting started
 
-For a proper installation you should use tagged images and your own implementation of kubernetes manifests, for a quick start however feel free to follow the instruction below.
+For a proper installation, you should use tagged images and your own implementation of Kubernetes manifests. For a quick start, however, feel free to follow the instructions below.
 
 ## Installing proxy
 
@@ -12,7 +12,7 @@ kustomize build manifests/ | kubectl -n kube-system apply -f -
 
 ## Installing the plugin
 
-Ensure that you go bin directory is in the path.
+Ensure that your Go bin directory is in the path.
 
 ```
 go install github.com/adyen/kubectl-rexec@latest
@@ -24,7 +24,7 @@ kubectl rexec exec --help
 kubectl rexec cp --help
 ```
 
-Tail the logs of the proxy to see audit events, and ideally set up a logshipping setup that suits you to store them.
+Tail the logs of the proxy to see audit events, and ideally set up a log shipping setup that suits you to store them.
 
 ```
 kubectl -n kube-system logs -l app=rexec -f
