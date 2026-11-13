@@ -181,7 +181,7 @@ func NewCmdCp(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Co
 		Use:   "cp <pod-src> <local-dest>",
 		Short: i18n.T("Copy files and directories from containers (with audit)"),
 		Long: templates.LongDesc(`
-			Copy files and directories from containers to local filesystem.
+			Copy files and directories from containers to the local filesystem.
 			This command uses rexec for audited file transfers.
 
 			Note: Only copying FROM pods is supported (for security reasons).

@@ -28,7 +28,7 @@ import (
 	"k8s.io/kubectl/pkg/util/term"
 )
 
-// We dont do much here, mostly implementing the same exec command
+// We don't do much here, mostly implementing the same exec command
 // as in upstream, with the difference in the path we are calling
 
 var MatchVersionKubeConfigFlags *cmdutil.MatchVersionFlags
@@ -53,7 +53,7 @@ func Rexec() {
 		Use:   "rexec",
 		Short: i18n.T("rexec plugin for kubectl exec"),
 		Long: templates.LongDesc(`
-      provides audited way to perform kubectl exec and cp.`),
+      provides an audited way to perform kubectl exec and cp.`),
 	}
 
 	cmds.SetGlobalNormalizationFunc(cliflag.WarnWordSepNormalizeFunc)
@@ -80,7 +80,7 @@ func Rexec() {
 		Executor: &cmdexec.DefaultRemoteExecutor{},
 	}
 
-	roptions := &RexecOptoins{
+	roptions := &RexecOptions{
 		ExecOptions: options,
 	}
 
@@ -118,7 +118,7 @@ func Rexec() {
 	}
 }
 
-type RexecOptoins struct {
+type RexecOptions struct {
 	*cmdexec.ExecOptions
 }
 
@@ -139,15 +139,15 @@ func (a *terminalSizeQueueAdapter) Next() *remotecommand.TerminalSize {
 	}
 }
 
-func NewRexecOptions(e *cmdexec.ExecOptions) *RexecOptoins {
-	r := RexecOptoins{e}
+func NewRexecOptions(e *cmdexec.ExecOptions) *RexecOptions {
+	r := RexecOptions{e}
 	return &r
 }
 
 // mostly copy paste of the upstream Run() command
 // with the minimal adjustment to call a different
 // endpoint
-func (r *RexecOptoins) rexecRun(ctx context.Context) error {
+func (r *RexecOptions) rexecRun(ctx context.Context) error {
 	var err error
 	if len(r.PodName) != 0 {
 		r.Pod, err = r.PodClient.Pods(r.ExecOptions.Namespace).Get(ctx, r.ExecOptions.PodName, metav1.GetOptions{})
