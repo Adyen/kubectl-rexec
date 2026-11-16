@@ -204,6 +204,38 @@ func TestExtractTarDirectory(t *testing.T) {
 	})
 }
 
+func TestExtractTarCurrentDirectoryToNewDestination(t *testing.T) {
+	runExtractTarScenarioCase(t, extractTarScenario{
+		name:       "current directory",
+		files:      map[string]string{"./report.txt": content1Str, "./subdir/data.txt": content2Str},
+		srcBase:    ".",
+		renameDest: "downloaded",
+		assertions: func(t *testing.T, tmpDir string, destPath string) {
+			for name, want := range map[string]string{"report.txt": content1Str, "subdir/data.txt": content2Str} {
+				content, err := os.ReadFile(filepath.Join(destPath, name))
+				if err != nil {
+					t.Fatalf("failed to read extracted file %q: %v", name, err)
+				}
+				if string(content) != want {
+					t.Errorf("content of %q = %q, want %q", name, content, want)
+				}
+			}
+		},
+	})
+}
+
+func TestExtractTarCurrentDirectoryRejectsTraversal(t *testing.T) {
+	for _, name := range []string{"../escape", "./../../escape", "/escape", ".."} {
+		t.Run(name, func(t *testing.T) {
+			dest := filepath.Join(t.TempDir(), "downloaded")
+			err := newDefaultCopyOptions().extractTar(createTestTar(t, map[string]string{name: contentStr}), dest, ".")
+			if err == nil || !strings.Contains(err.Error(), traversalErrorMsg) {
+				t.Fatalf("expected path traversal error for %q, got %v", name, err)
+			}
+		})
+	}
+}
+
 func TestExtractTarRenameDirectory(t *testing.T) {
 	runExtractTarScenarioCase(t, extractTarScenario{
 		name:       "rename directory",
