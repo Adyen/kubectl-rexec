@@ -398,17 +398,17 @@ func setupCommandAudit(t *testing.T) *bytes.Buffer {
 	oldSessionMap := sessionMap
 	oldCommandMap := commandMap
 	oldAuditLogger := auditLogger
-	oldMax := MaxStokesPerLine
+	oldMax := MaxStrokesPerLine
 	t.Cleanup(func() {
 		sessionMap = oldSessionMap
 		commandMap = oldCommandMap
 		auditLogger = oldAuditLogger
-		MaxStokesPerLine = oldMax
+		MaxStrokesPerLine = oldMax
 	})
 
 	sessionMap = map[string]sessionInfo{}
 	commandMap = map[string][]byte{}
-	MaxStokesPerLine = 2000 // production default
+	MaxStrokesPerLine = 2000 // production default
 	var output bytes.Buffer
 	auditLogger = zerolog.New(&output)
 	return &output

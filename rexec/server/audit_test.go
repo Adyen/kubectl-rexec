@@ -132,13 +132,13 @@ func captureAudit(t *testing.T) *bytes.Buffer {
 // instead of being segmented into auditable commands.
 func TestStoreOrFlushSplitsOnLineFeedAndCarriageReturn(t *testing.T) {
 	oldMap := commandMap
-	oldMax := MaxStokesPerLine
+	oldMax := MaxStrokesPerLine
 	t.Cleanup(func() {
 		commandMap = oldMap
-		MaxStokesPerLine = oldMax
+		MaxStrokesPerLine = oldMax
 	})
 	commandMap = map[string][]byte{}
-	MaxStokesPerLine = 2000
+	MaxStrokesPerLine = 2000
 
 	buf := captureAudit(t)
 

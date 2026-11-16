@@ -63,7 +63,7 @@ var commandMap map[string][]byte
 var commandSync sync.Mutex
 var SecretSauce string
 var ByPassedUsers []string
-var MaxStokesPerLine int
+var MaxStrokesPerLine int
 var MetricsPort int
 var tokenSync sync.Mutex
 
@@ -110,8 +110,8 @@ func Init() {
 			return
 		}
 	}
-	if MaxStokesPerLine == 0 {
-		MaxStokesPerLine = 2000
+	if MaxStrokesPerLine == 0 {
+		MaxStrokesPerLine = 2000
 	}
 
 	// load the front-proxy CA so inbound exec requests can be authenticated as
@@ -209,5 +209,5 @@ No User found
 `
 
 var httpInternalError = `
-Internal errror
+Internal error
 `
