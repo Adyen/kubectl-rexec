@@ -26,6 +26,7 @@ The contract suite validates:
 - command, keystroke, lifecycle, user, pod, container, namespace, and client-IP audit fields
 - user and group impersonation, upstream RBAC enforcement, and direct-exec denial
 - missing and completed targets, plus pod-running timeout behavior
+- `cp` downloads of a single file and of a directory's contents (`pod:dir/.`) into a new local destination, plus upload rejection
 
 ## Unit Tests
 
