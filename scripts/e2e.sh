@@ -157,6 +157,19 @@ if ! grep -q "${token}" "${TMP_COPY_DIR}/$(basename "${remote_file}")"; then
   exit 1
 fi
 
+echo "checking rexec cp download of a directory's contents (pod:dir/.)..."
+remote_dir="/tmp/rexec-cp-dir-${token}"
+kubectl rexec --context "${KUBE_CONTEXT}" exec "${POD}" -n "${NAMESPACE}" -c primary -- \
+  sh -c "mkdir -p '${remote_dir}/subdir' && printf '%s' '${token}' > '${remote_dir}/report.txt' && printf '%s' '${token}' > '${remote_dir}/subdir/data.txt'"
+dot_dest="${TMP_COPY_DIR}/dot-dest"
+kubectl rexec --context "${KUBE_CONTEXT}" cp "${POD}:${remote_dir}/." "${dot_dest}" -n "${NAMESPACE}" -c primary
+for copied in "${dot_dest}/report.txt" "${dot_dest}/subdir/data.txt"; do
+  if ! grep -q "${token}" "${copied}"; then
+    echo "error: ${copied} missing or does not contain expected token" >&2
+    exit 1
+  fi
+done
+
 echo "checking rexec cp upload rejection..."
 upload_file="${TMP_COPY_DIR}/upload-${token}"
 printf '%s' "${token}" > "${upload_file}"

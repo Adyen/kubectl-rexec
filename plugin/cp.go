@@ -545,8 +545,9 @@ func computeSafeTarget(name, destPath, baseAbs, srcBase string, destIsDir bool) 
 		// by `tar cf - -C <dir> -- <srcBase>`, so every legitimate entry is
 		// exactly srcBase or lives under it. Anything else (e.g. "foobar" or
 		// "foo2/evil", which filepath.Rel would map to "../...") is a crafted
-		// stream trying to write siblings of the requested file.
-		if cleanName != srcBase && !strings.HasPrefix(cleanName, srcBase+"/") {
+		// stream trying to write siblings of the requested file. For ".",
+		// every relative entry is a child; path.Clean removes its "./" prefix.
+		if srcBase != "." && cleanName != srcBase && !strings.HasPrefix(cleanName, srcBase+"/") {
 			return "", fmt.Errorf(errPathTraversal, name)
 		}
 		rel, err := filepath.Rel(srcBase, cleanName)
