@@ -14,7 +14,7 @@ cluster, and exercises the real aggregated API and validating webhook:
 Docker, Kind, kubectl, and Go must be installed. Set
 `REXEC_KEEP_CLUSTER=true` to retain the cluster for debugging. CI runs the
 suite against Kubernetes 1.29 with
-`TranslateStreamCloseWebsocketRequests=true` and Kubernetes 1.35.
+`TranslateStreamCloseWebsocketRequests=true` and Kubernetes 1.37.
 
 The contract suite validates:
 
