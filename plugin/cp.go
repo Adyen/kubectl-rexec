@@ -317,8 +317,10 @@ func (o *CopyOptions) copyFromPod(ctx context.Context, src, dest *fileSpec) erro
 		return err
 	}
 
-	srcDir := filepath.Dir(src.File)
-	srcBase := filepath.Base(src.File)
+	// src.File is a path inside the container: use "path", not "filepath", which
+	// would rewrite it with the client OS separator (backslashes on Windows).
+	srcDir := path.Dir(src.File)
+	srcBase := path.Base(src.File)
 	command := []string{"tar", "cf", "-", "-C", srcDir, "--", srcBase}
 
 	// The pod controls both streams: cap stdout hard (it becomes local files

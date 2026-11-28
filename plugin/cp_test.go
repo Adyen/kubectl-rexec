@@ -5,12 +5,19 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/client-go/kubernetes/fake"
+	restclient "k8s.io/client-go/rest"
+	"k8s.io/kubectl/pkg/scheme"
 )
 
 const (
@@ -600,5 +607,40 @@ func validateTarResult(t *testing.T, header *tar.Header, targetPath string, want
 		if !info.IsDir() {
 			t.Error("target should be a directory")
 		}
+	}
+}
+
+// The remote path belongs to the container, so the tar command must keep
+// forward slashes whatever OS the client runs on.
+func TestCopyFromPodRemotePathSeparators(t *testing.T) {
+	var command []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		command = r.URL.Query()["command"]
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	o := newDefaultCopyOptions()
+	o.Clientset = fake.NewSimpleClientset(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-pod", Namespace: "default"},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}},
+	})
+	o.ClientConfig = &restclient.Config{
+		Host: server.URL,
+		ContentConfig: restclient.ContentConfig{
+			GroupVersion:         &corev1.SchemeGroupVersion,
+			NegotiatedSerializer: scheme.Codecs,
+		},
+	}
+
+	src := &fileSpec{PodName: "my-pod", PodNamespace: "default", File: "/var/log/app.log"}
+	// The server rejects the exec request; only the requested command matters.
+	if err := o.copyFromPod(context.Background(), src, &fileSpec{File: t.TempDir()}); err == nil {
+		t.Fatal("expected the rejected exec request to return an error")
+	}
+
+	want := "tar cf - -C /var/log -- app.log"
+	if got := strings.Join(command, " "); got != want {
+		t.Errorf("remote command = %q, want %q", got, want)
 	}
 }
